@@ -356,7 +356,7 @@ AQUA_init()
   [adapter openPlotWithIndex:AQUA_plotRef];
 
   /* Check for support of version-dependent features */
-   AQUA_hasAlphaSupport = [AQTAdapter respondsToSelector:@selector(setColorRed:green:blue:alpha:)];
+   AQUA_hasAlphaSupport = [AQTAdapter instancesRespondToSelector:@selector(setColorRed:green:blue:alpha:)];
 
   /* set xmax, ymax*/
   term->xmax = AQUA_xSize;
