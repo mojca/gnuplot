@@ -103,11 +103,6 @@
 #include <vector>
 #include <list>
 
-/* suprisingly Cocoa version of wxWidgets does not define _Bool ! */
-#ifdef __WXOSX_COCOA__
-#define _Bool bool
-#endif
-
 extern "C" {
 /* for interactive */
 # include "plot.h"
