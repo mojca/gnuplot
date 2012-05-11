@@ -1347,7 +1347,7 @@ if test "$is_next" = yes; then
   AC_MSG_RESULT([  next terminal: yes])
 fi
 
-if test "$ac_cv_lib_aquaterm_aqtInit" = yes; then
+if test "$with_aquaterm" = yes; then
   AC_MSG_RESULT([  aqua terminal (OSX): yes])
 else
   AC_MSG_RESULT([  aqua terminal (OSX): no])
