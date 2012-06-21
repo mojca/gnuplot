@@ -1,5 +1,5 @@
 #ifndef lint
-static char *RCSid() { return RCSid("$Id: graphics.c,v 1.391 2012/04/17 22:42:53 sfeam Exp $"); }
+static char *RCSid() { return RCSid("$Id: graphics.c,v 1.396 2012/06/13 20:12:59 sfeam Exp $"); }
 #endif
 
 /* GNUPLOT - graphics.c */
@@ -2008,7 +2008,8 @@ do_plot(struct curve_points *plots, int pcount)
 		break;
 
 	    case PM3DSURFACE:
-		int_warn(NO_CARET, "Can't use pm3d for 2d plots");
+	    case SURFACEGRID:
+		int_warn(NO_CARET, "Can't use pm3d or surface for 2d plots");
 		break;
 
 	    case LABELPOINTS:
@@ -2040,6 +2041,8 @@ do_plot(struct curve_points *plots, int pcount)
 		break;
 		
 #endif
+	    default:
+		int_error(NO_CARET, "unknown plot style");
 	    }
 	}
 
@@ -2854,8 +2857,12 @@ plot_steps(struct curve_points *plot)
     /* EAM April 2011:  Default to lines only, but allow filled boxes */
     if ((plot->plot_style & PLOT_STYLE_HAS_FILL) && t->fillbox) {
 	style = style_from_fill(&plot->fill_properties);
-	ey = 0;
-	cliptorange(ey, Y_AXIS.min, Y_AXIS.max);
+	if (Y_AXIS.log) {
+	    ey = Y_AXIS.min;
+	} else {
+	    ey = 0;
+	    cliptorange(ey, Y_AXIS.min, Y_AXIS.max);
+	}
 	y0 = map_y(ey);
     }
 
@@ -5945,12 +5952,13 @@ void
 do_ellipse( int dimensions, t_ellipse *e, int style, TBOOLEAN do_own_mapping )
 {
     gpiPoint vertex[120];
-    int i;
+    int i, in;
     double angle;
     double cx, cy;
     double xoff, yoff;
     double junkfoo;
     int junkw, junkh;
+    int xcent, ycent;
     double cosO = cos(DEG2RAD * e->orientation);
     double sinO = sin(DEG2RAD * e->orientation);
     double A = e->extent.x / 2.0;	/* Major axis radius */
@@ -5973,11 +5981,10 @@ do_ellipse( int dimensions, t_ellipse *e, int style, TBOOLEAN do_own_mapping )
 	}
 	else if (dimensions == 2)
 	    map_position_double(&e->center, &cx, &cy, "ellipse");
-    else
+	else
 	    map3d_position_double(&e->center, &cx, &cy, "ellipse");
 
     /* Calculate the vertices */
-    vertex[0].style = style;
     for (i=0, angle = 0.0; i<=segments; i++, angle += ang_inc) {
         /* Given that the (co)sines of same sequence of angles 
          * are calculated every time - shouldn't they be precomputed
@@ -6036,8 +6043,24 @@ do_ellipse( int dimensions, t_ellipse *e, int style, TBOOLEAN do_own_mapping )
 
     if (style) {
 	/* Fill in the center */
+	gpiPoint fillarea[120];
+	for (i=0, in=0; i<segments; i++) {
+	    xcent = cx; ycent = cy;
+	    fillarea[in] = vertex[i];
+	    if (clip_line(&xcent, &ycent, &fillarea[in].x, &fillarea[in].y))
+		in++;
+	}
+	if (clip_point(cx,cy))
+	    for (i=segments-1; i>=0; i--) {
+		fillarea[in+1] = vertex[i];
+		fillarea[in].x = cx; fillarea[in].y = cy;
+		if (clip_line(&fillarea[in+1].x, &fillarea[in+1].y, &fillarea[in].x, &fillarea[in].y))
+		    in++;
+	    }
+
+	fillarea[0].style = style;
 	if (term->filled_polygon)
-	    term->filled_polygon(segments, vertex);
+	    term->filled_polygon(in, fillarea);
     } else {
 	/* Draw the arc */
 	for (i=0; i<segments; i++)

@@ -1,5 +1,5 @@
 #ifndef lint
-static char *RCSid() { return RCSid("$Id: plot2d.c,v 1.263 2012/04/18 00:13:46 sfeam Exp $"); }
+static char *RCSid() { return RCSid("$Id: plot2d.c,v 1.265 2012/06/02 04:43:51 sfeam Exp $"); }
 #endif
 
 /* GNUPLOT - plot2d.c */
@@ -742,15 +742,19 @@ get_data(struct curve_points *current_plot)
 
 #endif
 	    } else {
-		    if (current_plot->plot_style == CANDLESTICKS
-			|| current_plot->plot_style == FINANCEBARS) {
-			int_warn(storetoken, "This plot style does not work with 1 or 2 cols. Setting to points");
-			current_plot->plot_style = POINTSTYLE;
-		    }
-		    /* xlow and xhigh are same as x */
-		    /* auto width if boxes, else ignored */
-		    store2d_point(current_plot, i++, v[0], v[1], v[0], v[0], v[1],
-				  v[1], -1.0);
+		double w;
+		if (current_plot->plot_style == CANDLESTICKS
+		    || current_plot->plot_style == FINANCEBARS) {
+		    int_warn(storetoken, "This plot style does not work with 1 or 2 cols. Setting to points");
+		    current_plot->plot_style = POINTSTYLE;
+		}
+		if (current_plot->plot_smooth == SMOOTH_ACSPLINES)
+		    w = 1.0;	/* Unit weights */
+		else
+		    w = -1.0;	/* Auto-width boxes in some styles */
+		/* Set x/y high/low to exactly [x,y] */
+		store2d_point(current_plot, i++, v[0], v[1], 
+						 v[0], v[0], v[1], v[1], w);
 	    }
 	    break;
 
@@ -1445,6 +1449,7 @@ box_range_fiddling(struct curve_points *plot)
     if (axis_array[plot->x_axis].autoscale & AUTOSCALE_MIN) {
 	if (plot->points[0].type != UNDEFINED && plot->points[1].type != UNDEFINED) {
 	    xlow = plot->points[0].x - (plot->points[1].x - plot->points[0].x) / 2.;
+	    xlow = AXIS_DE_LOG_VALUE(plot->x_axis, xlow);
 	    if (axis_array[plot->x_axis].min > xlow)
 		axis_array[plot->x_axis].min = xlow;
 	}
@@ -1452,6 +1457,7 @@ box_range_fiddling(struct curve_points *plot)
     if (axis_array[plot->x_axis].autoscale & AUTOSCALE_MAX) {
 	if (plot->points[i].type != UNDEFINED && plot->points[i-1].type != UNDEFINED) {
 	    xhigh = plot->points[i].x + (plot->points[i].x - plot->points[i-1].x) / 2.;
+	    xhigh = AXIS_DE_LOG_VALUE(plot->x_axis, xhigh);
 	    if (axis_array[plot->x_axis].max < xhigh)
 		axis_array[plot->x_axis].max = xhigh;
 	}

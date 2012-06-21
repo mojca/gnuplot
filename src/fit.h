@@ -1,5 +1,5 @@
 /*
- * $Id: fit.h,v 1.14 2010/10/10 04:44:34 sfeam Exp $
+ * $Id: fit.h,v 1.16 2012/06/09 21:47:16 markisch Exp $
  */
 
 /* GNUPLOT - fit.h */
@@ -47,6 +47,9 @@
 /* Suffix of a backup file */
 #define BACKUP_SUFFIX ".old"
 
+/* defaults */
+#define DEF_FIT_LIMIT 1e-5
+
 /*****************************************************************
     Useful macros
     We avoid any use of varargs/stdargs (not good style but portable)
@@ -63,6 +66,7 @@ extern char fitbuf[];
 extern char *fitlogfile;
 extern TBOOLEAN fit_errorvariables;
 extern TBOOLEAN fit_quiet;
+extern TBOOLEAN fit_errorscaling;
 
 /* Prototypes of functions exported by fit.c */
 
@@ -71,7 +75,6 @@ void init_fit __PROTO((void));
 void update __PROTO((char *pfile, char *npfile));
 void fit_command __PROTO((void));
 size_t wri_to_fil_last_fit_cmd __PROTO((FILE *fp));
-/* HBB/H.Harders NEW 20020927 */
 char *getfitlogfile __PROTO((void));
 
 #endif /* GNUPLOT_FIT_H */

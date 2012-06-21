@@ -1,5 +1,5 @@
 /*
- * $Id: gp_types.h,v 1.50 2011/04/16 04:55:26 sfeam Exp $
+ * $Id: gp_types.h,v 1.52 2012/06/19 18:11:06 sfeam Exp $
  */
 
 /* GNUPLOT - gp_types.h */
@@ -47,8 +47,9 @@
 /* type_udv() will return 0 rather than type if udv does not exist */
 enum DATA_TYPES {
 	INTGR=1,
-	CMPLX
-	, STRING
+	CMPLX,
+	STRING,
+	DATABLOCK
 };
 
 enum MODE_PLOT_TYPE {
@@ -107,6 +108,7 @@ typedef enum PLOT_STYLE {
     , CIRCLES      = 28*PLOT_STYLE_BITS + PLOT_STYLE_HAS_LINE + PLOT_STYLE_HAS_FILL
     , BOXPLOT      = 29*PLOT_STYLE_BITS + PLOT_STYLE_HAS_FILL + PLOT_STYLE_HAS_POINT
     , ELLIPSES     = 30*PLOT_STYLE_BITS + PLOT_STYLE_HAS_LINE + PLOT_STYLE_HAS_FILL
+    , SURFACEGRID  = 31*PLOT_STYLE_BITS + PLOT_STYLE_HAS_LINE,
 } PLOT_STYLE;
 
 typedef enum PLOT_SMOOTH {
@@ -136,6 +138,7 @@ typedef struct value {
 	int int_val;
 	struct cmplx cmplx_val;
 	char *string_val;
+	char **data_array;
     } v;
 } t_value;
 

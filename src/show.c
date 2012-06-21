@@ -1,5 +1,5 @@
 #ifndef lint
-static char *RCSid() { return RCSid("$Id: show.c,v 1.268 2012/04/18 00:13:46 sfeam Exp $"); }
+static char *RCSid() { return RCSid("$Id: show.c,v 1.272 2012/06/19 18:11:06 sfeam Exp $"); }
 #endif
 
 /* GNUPLOT - show.c */
@@ -1697,6 +1697,8 @@ show_label(int tag)
 		save_linetype(stderr, &(this_label->lp_properties), TRUE);
 		show_position(&this_label->offset);
 	    }
+	    if (this_label->hypertext)
+		fprintf(stderr, " hypertext");
 
 	    /* Entry font added by DJL */
 	    fputc('\n', stderr);
@@ -2497,6 +2499,10 @@ show_fit()
 \tfit will%s place parameter errors in variables\n",
 	    fit_errorvariables ? "" : " not");
 
+    fprintf(stderr, "\
+\tfit will%s scale parameter errors with the reduced chi square\n",
+	    fit_errorscaling ? "" : " not");
+
     if (fitlogfile != NULL) {
         fprintf(stderr, "\
 \tlog-file for fits is was set by the user to be \n\
@@ -2580,7 +2586,8 @@ static void
 show_surface()
 {
     SHOW_ALL_NL;
-    fprintf(stderr, "\tsurface is %sdrawn\n", draw_surface ? "" : "not ");
+    fprintf(stderr, "\tsurface is %sdrawn %s\n",
+	draw_surface ? "" : "not ", implicit_surface ? "" : "only if explicitly requested");
 }
 
 
@@ -3295,6 +3302,16 @@ disp_value(FILE *fp, struct value *val, TBOOLEAN need_quotes)
 		fprintf(fp, "%s", val->v.string_val);
 	}
 	break;
+    case DATABLOCK:
+	{
+	char **dataline = val->v.data_array;
+	int nlines = 0;
+	if (dataline)
+	    while (*dataline++)
+		nlines++;
+	fprintf(fp, "<%d line data block>", nlines);
+	break;
+	}
     default:
 	int_error(NO_CARET, "unknown type in disp_value()");
     }

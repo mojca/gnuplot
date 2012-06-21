@@ -1,5 +1,5 @@
 /*
- * $Id: wgraph.c,v 1.144 2011/11/18 07:48:28 markisch Exp $
+ * $Id: wgraph.c,v 1.151 2012/06/13 09:24:12 markisch Exp $
  */
 
 /* GNUPLOT - win/wgraph.c */
@@ -50,7 +50,7 @@
 #define _WIN32_WINNT 0x0400
 #endif
 /* BM: for AlphaBlend/TransparentBlt */
-#define WINVER 0x0410
+#define WINVER 0x0501
 /* BM: for Toolbars */
 #define _WIN32_IE 0x0501
 #include <windows.h>
@@ -203,6 +203,7 @@ static struct {
 	char fontname[MAXFONTNAME]; /* current font name */
 	double fontsize;     /* current font size */
 	int totalwidth;      /* total width of printed text */
+	double res_scale;    /* scaling due to different resolution (printers) */
 } enhstate;
 
 
@@ -237,6 +238,9 @@ static void	CopyPrint(LPGW lpgw);
 static void	WriteGraphIni(LPGW lpgw);
 static char *	GraphDefaultFont(void);
 static void	ReadGraphIni(LPGW lpgw);
+static void	add_tooltip(LPGW lpgw, PRECT rect, LPWSTR text);
+static void	clear_tooltips(LPGW lpgw);
+static void	track_tooltip(LPGW lpgw, int x, int y);
 static COLORREF	GetColor(HWND hwnd, COLORREF ref);
 static void	UpdateColorSample(HWND hdlg);
 static BOOL	LineStyle(LPGW lpgw);
@@ -357,6 +361,7 @@ GraphOpSize(LPGW lpgw, UINT op, UINT x, UINT y, LPCSTR str, DWORD size)
 	}
 	this->used++;
 	lpgw->nGWOP++;
+	lpgw->buffervalid = FALSE;
 	return;
 }
 
@@ -394,6 +399,9 @@ GraphInitStruct(LPGW lpgw)
 		lpgw->fontsize = WINFONTSIZE;
 		lpgw->maxkeyboxes = 0;
 		lpgw->keyboxes = 0;
+		lpgw->buffervalid = FALSE;
+		lpgw->maxhideplots = MAXPLOTSHIDE;
+		lpgw->hideplot = (BOOL *) calloc(MAXPLOTSHIDE, sizeof(BOOL));
 		ReadGraphIni(lpgw);
 	}
 }
@@ -605,6 +613,7 @@ void WDPROC
 GraphStart(LPGW lpgw, double pointsize)
 {
 	lpgw->locked = TRUE;
+	lpgw->buffervalid = FALSE;
 	DestroyBlocks(lpgw);
 	lpgw->org_pointsize = pointsize;
 	if ( !lpgw->hWndGraph || !IsWindow(lpgw->hWndGraph) )
@@ -634,6 +643,7 @@ GraphEnd(LPGW lpgw)
 
 	GetClientRect(lpgw->hWndGraph, &rect);
 	InvalidateRect(lpgw->hWndGraph, (LPRECT) &rect, 1);
+	lpgw->buffervalid = FALSE;
 	lpgw->locked = FALSE;
 	UpdateWindow(lpgw->hWndGraph);
 #ifdef USE_MOUSE
@@ -669,6 +679,7 @@ GraphPrint(LPGW lpgw)
 void WDPROC
 GraphRedraw(LPGW lpgw)
 {
+	lpgw->buffervalid = FALSE;
 	if (GraphHasWindow(lpgw))
 		SendMessage(lpgw->hWndGraph, WM_COMMAND, M_REBUILDTOOLS, 0L);
 }
@@ -729,9 +740,9 @@ MakePens(LPGW lpgw, HDC hdc)
 		pen = lpgw->monopen[1];
 		pen.lopnWidth.x *= lpgw->linewidth * lpgw->sampling;
 		lpgw->hapen = CreatePenIndirect(&pen); 	/* axis */
-		lpgw->hbrush = CreateSolidBrush(RGB(255,255,255));
+		lpgw->hbrush = CreateSolidBrush(lpgw->background);
 		for (i = 0; i < WGNUMPENS + 2; i++)
-			lpgw->colorbrush[i] = CreateSolidBrush(RGB(0,0,0));
+			lpgw->colorbrush[i] = CreateSolidBrush(lpgw->monopen[i].lopnColor);
 	} else {
 		pen = lpgw->colorpen[1];
 		pen.lopnWidth.x *= lpgw->linewidth * lpgw->sampling;
@@ -989,13 +1000,14 @@ SelFont(LPGW lpgw)
 static LPWSTR
 UnicodeText(const char *str, enum set_encoding_id encoding)
 {
-    UINT codepage = 0;
+    UINT codepage;
     LPWSTR textw = NULL;
 
     /* For a list of code page identifiers see
        http://msdn.microsoft.com/en-us/library/dd317756%28v=vs.85%29.aspx
     */
     switch (encoding) {
+        case S_ENC_DEFAULT:    codepage = CP_ACP; break;
         case S_ENC_ISO8859_1:  codepage = 28591; break;
         case S_ENC_ISO8859_2:  codepage = 28592; break;
         case S_ENC_ISO8859_9:  codepage = 28599; break;
@@ -1011,9 +1023,9 @@ UnicodeText(const char *str, enum set_encoding_id encoding)
         case S_ENC_KOI8_U:     codepage = 21866; break;
         case S_ENC_SJIS:       codepage =   932; break;
         case S_ENC_UTF8:       codepage = CP_UTF8; break;
-		default:               codepage = 0;
+        default:               codepage = 0xffffffff;
     }
-    if (codepage != 0) {
+    if (codepage != 0xffffffff) {
         int length;
 
         /* get length of converted string */
@@ -1129,7 +1141,9 @@ GraphEnhancedOpen(char *fontname, double fontsize, double base,
 			non-optimal results for most font and size selections.
 			OUTLINEFONTMETRICS could be used for better results here.
 		*/
-		enhstate.base = win_scale * base * enhstate.lpgw->sampling * enhstate.lpgw->fontscale;
+		enhstate.base = win_scale * base *
+						enhstate.lpgw->sampling * enhstate.lpgw->fontscale *
+						enhstate.res_scale;
 	}
 }
 
@@ -1416,19 +1430,24 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 	struct GWOP *curptr;
 	struct GWOPBLK *blkptr;
 
-	/* layers */
+	/* layers and hypertext */
 	unsigned plotno = 0;
 	BOOL gridline = FALSE;
 	BOOL skipplot = FALSE;
 	BOOL keysample = FALSE;
+	BOOL interactive;
+	LPWSTR hypertext = NULL;
+	int hypertype = 0;
 
 	/* colors */
 	BOOL isColor;				/* use colors? */
 	COLORREF last_color = 0;	/* currently selected color */
+	double alpha_c = 1.;		/* alpha for transparency */
 
 	/* lines */
 	double line_width = lpgw->sampling * lpgw->linewidth;	/* current line width */
-	LOGPEN cur_penstruct;				/* current pen settings */
+	double lw_scale = 1.;
+	LOGPEN cur_penstruct;		/* current pen settings */
 
 	/* polylines and polygons */
 	int polymax = 200;			/* size of ppt */
@@ -1461,19 +1480,42 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 
     if (lpgw->locked) return;
 
-    /* HBB 20010218: the GDI status query functions don't work on Metafile
-     * handles, so can't know whether the screen is actually showing
-     * color or not, if drawgraph() is being called from CopyClip().
-     * Solve by defaulting isColor to 1 if hdc is a metafile. */
-    isColor = (((GetDeviceCaps(hdc, PLANES) * GetDeviceCaps(hdc,BITSPIXEL))	> 2)
-	       || (GetDeviceCaps(hdc, TECHNOLOGY) == DT_METAFILE));
+	/* clear hypertexts only in display sessions */
+	interactive = (GetObjectType(hdc) == OBJ_MEMDC) ||
+		((GetObjectType(hdc) == OBJ_DC) && (GetDeviceCaps(hdc, TECHNOLOGY) == DT_RASDISPLAY));
+	if (interactive)
+		clear_tooltips(lpgw);
 
-    if (lpgw->color && isColor) {
+	/* The GDI status query functions don't work on metafile, printer or
+	 * plotter handles, so can't know whether the screen is actually showing
+	 * color or not, if drawgraph() is being called from CopyClip().
+	 * Solve by defaulting isColor to TRUE in those cases.
+	 * Note that info on color capabilities of printers would be available
+	 * via DeviceCapabilities().
+	 */
+	isColor = (((GetDeviceCaps(hdc, PLANES) * GetDeviceCaps(hdc, BITSPIXEL)) > 2)
+	       || (GetDeviceCaps(hdc, TECHNOLOGY) == DT_METAFILE)
+	       || (GetDeviceCaps(hdc, TECHNOLOGY) == DT_PLOTTER)
+	       || (GetDeviceCaps(hdc, TECHNOLOGY) == DT_RASPRINTER));
+
+    if (isColor) {
 		SetBkColor(hdc, lpgw->background);
 		FillRect(hdc, rect, lpgw->hbrush);
     } else {
 		FillRect(hdc, rect, (HBRUSH)GetStockObject(WHITE_BRUSH));
     }
+
+	/* Need to scale line widths for raster printers so they are the same
+	   as on screen */
+	if ((GetDeviceCaps(hdc, TECHNOLOGY) == DT_RASPRINTER)) {
+		HDC hdc_screen = GetDC(NULL);
+		lw_scale = (double) GetDeviceCaps(hdc, VERTRES) /
+		           (double) GetDeviceCaps(hdc_screen, VERTRES);
+		line_width *= lw_scale;
+		ReleaseDC(NULL, hdc_screen);
+	}
+	/* Also needed for enhanced text */
+	enhstate.res_scale = lw_scale;
 
     ppt = (POINT *)LocalAllocPtr(LHND, (polymax+1) * sizeof(POINT));
 
@@ -1528,7 +1570,7 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 			if (polyi >= 2) {
 #ifdef HAVE_GDIPLUS
 				if (lpgw->antialiasing)
-					gdiplusPolyline(hdc, ppt, polyi, &cur_penstruct);
+					gdiplusPolyline(hdc, ppt, polyi, &cur_penstruct, alpha_c);
 				else
 #endif
 					Polyline(hdc, ppt, polyi);
@@ -1539,7 +1581,7 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				/* degenerate case e.g. when using 'linecolor variable' */
 #ifdef HAVE_GDIPLUS
 				if (lpgw->antialiasing)
-					gdiplusLine(hdc, cpoint, ppt[0], &cur_penstruct);
+					gdiplusLine(hdc, cpoint, ppt[0], &cur_penstruct, alpha_c);
 				else
 #endif
 					LineTo(hdc, ppt[0].x, ppt[0].y);
@@ -1555,7 +1597,14 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				case TERM_LAYER_BEFORE_PLOT:
 					plotno++;
 					lpgw->numplots = plotno;
-					if (plotno <= MAXPLOTSHIDE)
+					if (plotno >= lpgw->maxhideplots) {
+						int idx;
+						lpgw->maxhideplots += 10;
+						lpgw->hideplot = (BOOL *) realloc(lpgw->hideplot, lpgw->maxhideplots * sizeof(BOOL));
+						for (idx = plotno; idx < lpgw->maxhideplots; idx++)
+							lpgw->hideplot[idx] = FALSE;
+					}
+					if (plotno <= lpgw->maxhideplots)
 						skipplot = lpgw->hideplot[plotno - 1];
 					break;
 				case TERM_LAYER_AFTER_PLOT:
@@ -1592,6 +1641,20 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 		if (!(skipplot || (gridline && lpgw->hidegrid)) ||
 			(keysample || (curptr->op == W_line_type) || (curptr->op == W_setcolor)) ) {
 
+		/* special case hypertexts */
+		if ((hypertext != NULL) && (hypertype == TERM_HYPERTEXT_TOOLTIP)) {
+			/* point symbols */
+			if ((curptr->op >= W_dot) && (curptr->op <= W_dot + WIN_POINT_TYPES)) {
+				RECT rect;
+				rect.left = xdash - htic;
+				rect.right = xdash + htic;
+				rect.top = ydash - vtic;
+				rect.bottom = ydash + vtic;
+				add_tooltip(lpgw, &rect, hypertext);
+				hypertext = NULL;
+			}
+		}
+
 		switch (curptr->op) {
 		case 0:	/* have run past last in this block */
 			break;
@@ -1614,7 +1677,7 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 			if (polyi >= polymax) {
 #ifdef HAVE_GDIPLUS
 				if (lpgw->antialiasing)
-					gdiplusPolyline(hdc, ppt, polyi, &cur_penstruct);
+					gdiplusPolyline(hdc, ppt, polyi, &cur_penstruct, alpha_c);
 				else
 #endif
 					Polyline(hdc, ppt, polyi);
@@ -1664,6 +1727,7 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 			/* remember this color */
 			last_color = cur_penstruct.lopnColor;
 			fill_color = last_color;
+			alpha_c = 1.;
 			break;
 		}
 
@@ -1705,6 +1769,17 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 			break;
 		}
 
+		case W_hypertext:
+			if (interactive) {
+				/* Make a copy for future reference */
+				char * str = LocalLock(curptr->htext);
+				free(hypertext);
+				hypertext = UnicodeText(str, encoding);
+				hypertype = curptr->x;
+				LocalUnlock(curptr->htext);
+			}
+			break;
+
 		case W_fillstyle:
 			/* HBB 20010916: new entry, needed to squeeze the many
 			 * parameters of a filled box call through the bottleneck
@@ -1721,14 +1796,26 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				/* we already have a brush with that color */
 				break;
 			case FS_SOLID: {
-				double density = MINMAX(0, (int)(fillstyle >> 4), 100) * 0.01;
-				COLORREF color =
-					RGB(255 - density * (255 - GetRValue(last_color)),
-					    255 - density * (255 - GetGValue(last_color)),
-					    255 - density * (255 - GetBValue(last_color)));
-				draw_new_brush(lpgw, hdc, color);
-				solid_brush = lpgw->hcolorbrush;
-				fill_color = color;
+				if (alpha_c < 1.) {
+					alpha = alpha_c;
+					fill_color = last_color;
+					draw_new_brush(lpgw, hdc, fill_color);
+					solid_brush = lpgw->hcolorbrush;
+				} else if ((int)(fillstyle >> 4) == 100) {
+					/* special case this common choice */
+					// FIXME: we should already have that!
+					fill_color = last_color;
+					draw_new_brush(lpgw, hdc, fill_color);
+					solid_brush = lpgw->hcolorbrush;
+				} else {
+					double density = MINMAX(0, (int)(fillstyle >> 4), 100) * 0.01;
+					COLORREF color =
+						RGB(255 - density * (255 - GetRValue(last_color)),
+							255 - density * (255 - GetGValue(last_color)),
+							255 - density * (255 - GetBValue(last_color)));
+					solid_brush = lpgw->hcolorbrush;
+					fill_color = color;
+				}
 				break;
 			}
 			case FS_TRANSPARENT_PATTERN:
@@ -1741,22 +1828,22 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				pattern = GPMAX(fillstyle >> 4, 0) % pattern_num;
 				SelectObject(hdc, pattern_brush[pattern]);
 				break;
-			case FS_DEFAULT:
-				/* Leave the current brush and color in place */
-				break;
 			case FS_EMPTY:
-			default:
 				/* fill with background color */
 				SelectObject(hdc, lpgw->hbrush);
 				fill_color = lpgw->background;
 				solid_brush = lpgw->hbrush;
 				break;
+			case FS_DEFAULT:
+			default:
+				/* Leave the current brush and color in place */
+				break;
 			}
 			break;
 
 		case W_boxfill: {  /* ULIG */
-			/* NOTE: the x and y passed with this call are the width and
-			 * height of the box, actually. The left corner was stored into
+			/* NOTE: the x and y passed with this call are the coordinates of the
+			 * lower right corner of the box. The upper left corner was stored into
 			 * ppt[0] by a preceding W_move, and the style was set
 			 * by a W_fillstyle call. */
 			POINT p;
@@ -1768,18 +1855,24 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 			p.y = ydash;
 
 #ifdef HAVE_GDIPLUS
+			ppt[1].x = ppt[0].x;
+			ppt[1].y = ydash;
+			ppt[2].x = xdash;
+			ppt[2].y = ydash;
+			ppt[3].x = xdash;
+			ppt[3].y = ppt[0].y;
+			ppt[4].x = ppt[0].x;
+			ppt[4].y = ppt[0].y;
+
 			if (lpgw->antialiasing && lpgw->patternaa &&
 			    (((fillstyle & 0x0f) == FS_PATTERN) ||
 			     ((fillstyle & 0x0f) == FS_TRANSPARENT_PATTERN))) {
-				ppt[1].x = ppt[0].x;
-				ppt[1].y = ydash;
-				ppt[2].x = xdash;
-				ppt[2].y = ydash;
-				ppt[3].x = xdash;
-				ppt[3].y = ppt[0].y;
-				ppt[4].x = ppt[0].x;
-				ppt[4].y = ppt[0].y;
 				gdiplusPatternFilledPolygonEx(hdc, ppt, 5, fill_color, 1., lpgw->background, transparent, pattern);
+			} else if (((fillstyle & 0x0f) == FS_SOLID) || ((fillstyle & 0x0f) == FS_TRANSPARENT_SOLID)) {
+				if (transparent)
+					gdiplusSolidFilledPolygonEx(hdc, ppt, 5, fill_color, 1, lpgw->antialiasing && lpgw->polyaa);
+				else
+					gdiplusSolidFilledPolygonEx(hdc, ppt, 5, fill_color, alpha_c, lpgw->antialiasing && lpgw->polyaa);
 			} else
 #endif
 			if (transparent) {
@@ -1885,27 +1978,38 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 			 * that linewidth is exactly 1 iff it's in default
 			 * state */
 			line_width = curptr->x == 100 ? 1 : (curptr->x / 100.0);
-			line_width *= lpgw->sampling * lpgw->linewidth;
+			line_width *= lpgw->sampling * lpgw->linewidth * lw_scale;
 			break;
 
 		case W_setcolor: {
 			COLORREF color;
 
-			/* distinguish gray values and RGB colors */
-			if (curptr->y == 0) {			/* TC_FRAC */
-				rgb255_color rgb255;
-				rgb255maxcolors_from_gray(curptr->x / (double)WIN_PAL_COLORS, &rgb255);
-				color = RGB(rgb255.r, rgb255.g, rgb255.b);
-			}
-			else if (curptr->y == (TC_LT << 8)) {	/* TC_LT */
+			if (curptr->htext != NULL) {	/* TC_LT */
 				int pen = (int)curptr->x % WGNUMPENS;
-				if (pen <= LT_NODRAW)
+				if (pen <= LT_NODRAW) {
 					color = lpgw->background;
-				else
-					color = lpgw->colorpen[pen + 2].lopnColor;
-			}
-			else {					/* TC_RGB */
-				color = RGB(curptr->y & 0xff, (curptr->x >> 8) & 0xff, curptr->x & 0xff);
+				} else {
+					if (lpgw->color)
+						color = lpgw->colorpen[pen + 2].lopnColor;
+					else
+						color = lpgw->monopen[pen + 2].lopnColor;
+				}
+				alpha_c = 1.;
+			} else {						/* TC_RGB */
+				rgb255_color rgb255;
+				rgb255.r = (curptr->y & 0xff);
+				rgb255.g = (curptr->x >> 8);
+				rgb255.b = (curptr->x & 0xff);
+				alpha_c = 1. - ((curptr->y >> 8) & 0xff) / 255.;
+
+				if (lpgw->color || ((rgb255.r == rgb255.g) && (rgb255.r == rgb255.b))) {
+					/* Use colors or this is already gray scale */
+					color = RGB(rgb255.r, rgb255.g, rgb255.b);
+				} else {
+					/* convert to gray */
+					int luma = (int)(rgb255.r * 0.3 + rgb255.g * 0.59 + rgb255.b * 0.11);
+					color = RGB(luma, luma, luma);
+				}
 			}
 
 			/* solid fill brush */
@@ -1941,9 +2045,9 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 			/* end of point series --> draw polygon now */
 			if (!transparent) {
 #ifdef HAVE_GDIPLUS
-				if (lpgw->antialiasing && lpgw->polyaa && ((fillstyle & 0x0f) == FS_SOLID)) {
+				if ((fillstyle & 0x0f) == FS_SOLID) {
 					/* solid, antialiased fill */
-					gdiplusSolidFilledPolygonEx(hdc, ppt, polyi, fill_color, 1.0);
+					gdiplusSolidFilledPolygonEx(hdc, ppt, polyi, fill_color, alpha_c, lpgw->antialiasing && lpgw->polyaa);
 				} else if (lpgw->antialiasing && lpgw->patternaa && ((fillstyle & 0x0f) == FS_PATTERN)) {
 					gdiplusPatternFilledPolygonEx(hdc, ppt, polyi, fill_color, 1., lpgw->background, transparent, pattern);
 				} else
@@ -1956,8 +2060,8 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				}
 			} else {
 #ifdef HAVE_GDIPLUS
-				if (lpgw->antialiasing && lpgw->polyaa && (fillstyle & 0x0f) == FS_TRANSPARENT_SOLID) {
-					gdiplusSolidFilledPolygonEx(hdc, ppt, polyi, fill_color, alpha);
+				if (lpgw->antialiasing && (fillstyle & 0x0f) == FS_TRANSPARENT_SOLID) {
+					gdiplusSolidFilledPolygonEx(hdc, ppt, polyi, fill_color, alpha, lpgw->polyaa);
 				} else if (lpgw->antialiasing && lpgw->patternaa && ((fillstyle & 0x0f) == FS_TRANSPARENT_PATTERN)) {
 					gdiplusPatternFilledPolygonEx(hdc, ppt, polyi, fill_color, 1., lpgw->background, transparent, pattern);
 				} else
@@ -2110,13 +2214,36 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 					SelectClipRgn(hdc, hrgn);
 
 					if (color_mode != IC_RGBA) {
+						char * dibimage;
 						bmi.bmiHeader.biBitCount = 24;
+
+						if (!lpgw->color) {
+							/* create a copy of the color image */
+							int pad_bytes = (4 - (3 * width) % 4) % 4; /* scan lines start on ULONG boundaries */
+							int image_size = (width * 3 + pad_bytes) * height;
+							int x, y;
+							dibimage = (char *) malloc(image_size);
+							memcpy(dibimage, image, image_size);
+							for (y = 0; y < height; y ++) {
+								for (x = 0; x < width; x ++) {
+									BYTE * p = (BYTE *) dibimage + y * (3 * width + pad_bytes) + x * 3;
+									/* convert to gray */
+									int luma = (int) (p[2] * 0.3 + p[1] * 0.59 + p[0] * 0.11);
+									p[0] = p[1] = p[2] = luma;
+								}
+							}
+
+						} else {
+							dibimage = image;
+						}
 
 						rc = StretchDIBits(hdc,
 							GPMIN(corners[0].x, corners[1].x) , GPMIN(corners[0].y, corners[1].y),
 							abs(corners[1].x - corners[0].x), abs(corners[1].y - corners[0].y),
 							0, 0, width, height,
-							image, &bmi, DIB_RGB_COLORS, SRCCOPY);
+							dibimage, &bmi, DIB_RGB_COLORS, SRCCOPY);
+
+						if (!lpgw->color) free(dibimage);
 					} else {
 						HDC memdc;
 						HBITMAP membmp, oldbmp;
@@ -2129,6 +2256,19 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 						oldbmp = (HBITMAP)SelectObject(memdc, membmp);
 
 						memcpy(pvBits, image, width * height * 4);
+
+						/* convert to grayscale? */
+						if (!lpgw->color) {
+							int x, y;
+							for (y = 0; y < height; y ++) {
+								for (x = 0; x < width; x ++) {
+									UINT32 * p = pvBits + y * width + x;
+									/* convert to gray */
+									int luma = (int)(GetRValue(*p) * 0.3 + GetGValue(*p) * 0.59 + GetBValue(*p) * 0.11);
+									*p = (*p & 0xff000000) | RGB(luma, luma, luma);
+								}
+							}
+						}
 
 						ftn.BlendOp = AC_SRC_OVER;
 						ftn.BlendFlags = 0;
@@ -2167,12 +2307,12 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				a.y = ydash;
 				b.x = xdash + htic;
 				b.y = ydash;
-				gdiplusLineEx(hdc, a, b, PS_SOLID, line_width, last_color);
+				gdiplusLineEx(hdc, a, b, PS_SOLID, line_width, last_color, alpha_c);
 				a.x = xdash;
 				a.y = ydash - vtic;
 				b.x = xdash;
 				b.y = ydash + vtic;
-				gdiplusLineEx(hdc, a, b, PS_SOLID, line_width, last_color);
+				gdiplusLineEx(hdc, a, b, PS_SOLID, line_width, last_color, alpha_c);
 			} else
 #endif
 			{
@@ -2196,12 +2336,12 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				a.y = ydash - vtic;
 				b.x = xdash + htic;
 				b.y = ydash + vtic;
-				gdiplusLineEx(hdc, a, b, PS_SOLID, line_width, last_color);
+				gdiplusLineEx(hdc, a, b, PS_SOLID, line_width, last_color, alpha_c);
 				a.x = xdash - htic;
 				a.y = ydash + vtic;
 				b.x = xdash + htic;
 				b.y = ydash - vtic;
-				gdiplusLineEx(hdc, a, b, PS_SOLID, line_width, last_color);
+				gdiplusLineEx(hdc, a, b, PS_SOLID, line_width, last_color, alpha_c);
 			} else
 #endif
 			{
@@ -2224,7 +2364,7 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				POINT p;
 				p.x = xdash;
 				p.y = ydash;
-				gdiplusCircleEx(hdc, &p, htic, PS_SOLID, line_width, last_color);
+				gdiplusCircleEx(hdc, &p, htic, PS_SOLID, line_width, last_color, alpha_c);
 			} else
 #endif
 				Arc(hdc, xdash-htic, ydash-vtic, xdash+htic+1, ydash+vtic+1,
@@ -2246,7 +2386,7 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				POINT p;
 				p.x = xdash;
 				p.y = ydash;
-				gdiplusCircleEx(hdc, &p, htic, PS_SOLID, line_width, last_color);
+				gdiplusCircleEx(hdc, &p, htic, PS_SOLID, line_width, last_color, alpha_c);
 			}
 #endif
 			if (keysample) {
@@ -2294,7 +2434,7 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 #ifdef HAVE_GDIPLUS
 				if (lpgw->antialiasing) {
 					/* filled polygon with border */
-					gdiplusSolidFilledPolygonEx(hdc, p, i, last_color, 1.);
+					gdiplusSolidFilledPolygonEx(hdc, p, i, last_color, alpha_c, TRUE);
 				} else
 #endif
 				{
@@ -2308,7 +2448,7 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
 				p[i].y = p[0].y;
 #ifdef HAVE_GDIPLUS
 				if (lpgw->antialiasing) {
-					gdiplusPolylineEx(hdc, p, i + 1, PS_SOLID, line_width, last_color);
+					gdiplusPolylineEx(hdc, p, i + 1, PS_SOLID, line_width, last_color, alpha_c);
 				} else
 #endif
 				{
@@ -2347,7 +2487,7 @@ drawgraph(LPGW lpgw, HDC hdc, LPRECT rect)
     if (polyi >= 2) {
 #ifdef HAVE_GDIPLUS
 		if (lpgw->antialiasing)
-			gdiplusPolyline(hdc, ppt, polyi, &cur_penstruct);
+			gdiplusPolyline(hdc, ppt, polyi, &cur_penstruct, alpha_c);
 		else
 #endif
 			Polyline(hdc, ppt, polyi);
@@ -2798,6 +2938,96 @@ ReadGraphIni(LPGW lpgw)
 	}
 }
 
+/* ================================== */
+
+/* Hypertext support functions */
+
+static void
+add_tooltip(LPGW lpgw, PRECT rect, LPWSTR text)
+{
+	int idx = lpgw->numtooltips;
+
+	/* Extend buffer, if necessary */
+	if (lpgw->numtooltips >= lpgw->maxtooltips) {
+		lpgw->maxtooltips += 10;
+		lpgw->tooltips = (struct tooltips *) realloc(lpgw->tooltips, lpgw->maxtooltips * sizeof(struct tooltips));
+	}
+
+	rect->top += lpgw->ToolbarHeight;
+	rect->bottom += lpgw->ToolbarHeight;
+	lpgw->tooltips[idx].rect = *rect;
+	lpgw->tooltips[idx].text = text;
+	lpgw->numtooltips++;
+
+	if (!lpgw->hTooltip) {
+		TOOLINFO ti = { 0 };
+
+		/* Create new tooltip. */
+		HWND hwnd = CreateWindowEx(WS_EX_TOPMOST, TOOLTIPS_CLASS, NULL,
+									 WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+									 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+									 lpgw->hWndGraph, NULL, lpgw->hInstance, NULL);
+		lpgw->hTooltip = hwnd;
+
+		/* Associate the tooltip with the rect area.*/
+		ti.cbSize   = sizeof(TOOLINFO);
+		ti.uFlags   = TTF_SUBCLASS;
+		ti.hwnd     = lpgw->hWndGraph;
+		ti.hinst    = lpgw->hInstance;
+		ti.uId      = 0;
+		ti.rect     = * rect;
+		ti.lpszText = (LPTSTR) text;
+		SendMessage(hwnd, TTM_ADDTOOLW, 0, (LPARAM) (LPTOOLINFO) &ti);
+		SendMessage(hwnd, TTM_SETDELAYTIME, TTDT_INITIAL, (LPARAM) 100);
+		SendMessage(hwnd, TTM_SETDELAYTIME, TTDT_RESHOW, (LPARAM) 100);
+		SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+	}
+}
+
+
+static void
+clear_tooltips(LPGW lpgw)
+{
+	int i;
+	for (i = 0; i < lpgw->numtooltips; i++) {
+		free(lpgw->tooltips[i].text);
+	}
+	lpgw->numtooltips = 0;
+	lpgw->maxtooltips = 0;
+	free(lpgw->tooltips);
+	lpgw->tooltips = NULL;
+}
+
+
+static void
+track_tooltip(LPGW lpgw, int x, int y)
+{
+	static POINT p = {0, 0};
+	int i;
+
+	/* only update if mouse position changed */
+	if ((p.x == x) && (p.y == y))
+		return;
+	p.x = x; p.y = y;
+
+	for (i = 0; i < lpgw->numtooltips; i++) {
+		if (PtInRect(&(lpgw->tooltips[i].rect), p)) {
+			TOOLINFO ti = { 0 };
+			int width;
+
+			ti.cbSize   = sizeof(TOOLINFO);
+			ti.hwnd     = lpgw->hWndGraph;
+			ti.hinst    = lpgw->hInstance;
+			ti.rect     = lpgw->tooltips[i].rect;
+			ti.lpszText = (LPTSTR) lpgw->tooltips[i].text;
+			SendMessage(lpgw->hTooltip, TTM_NEWTOOLRECT, 0, (LPARAM) (LPTOOLINFO) &ti);
+			SendMessage(lpgw->hTooltip, TTM_UPDATETIPTEXTW, 0, (LPARAM) (LPTOOLINFO) &ti);
+			/* Multi-line tooltip. */
+			width = (wcschr(lpgw->tooltips[i].text, L'\n') == NULL) ? -1 : 200;
+			SendMessage(lpgw->hTooltip, TTM_SETMAXTIPWIDTH, 0, (LPARAM) (INT) width);
+		}
+	}
+}
 
 /* ================================== */
 
@@ -3147,6 +3377,8 @@ WndGraphProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 				if (ruler.on && ruler_lineto.on) {
 					Wnd_refresh_ruler_lineto(lpgw, lParam);
 				}
+				/* track hypertexts */
+				track_tooltip(lpgw, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
 				/* track (show) mouse position -- send the event to gnuplot */
 				Wnd_exec_event(lpgw, lParam,  GE_motion, wParam);
 				return 0L; /* end of WM_MOUSEMOVE */
@@ -3155,14 +3387,16 @@ WndGraphProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 				int i;
 				int x = GET_X_LPARAM(lParam);
 				int y = GET_Y_LPARAM(lParam) - lpgw->ToolbarHeight;
-				for (i = 0; (i < lpgw->numplots) && (i < lpgw->maxkeyboxes) && (i < MAXPLOTSHIDE); i++) {
+				for (i = 0; (i < lpgw->numplots) && (i < lpgw->maxkeyboxes) && (i < lpgw->maxhideplots); i++) {
 					if ((lpgw->keyboxes[i].left != INT_MAX) &&
 						(x >= lpgw->keyboxes[i].left) &&
 						(x <= lpgw->keyboxes[i].right) &&
 						(y <= lpgw->keyboxes[i].top) &&
 						(y >= lpgw->keyboxes[i].bottom)) {
 						lpgw->hideplot[i] = ! lpgw->hideplot[i];
-						SendMessage(lpgw->hToolbar, TB_CHECKBUTTON, M_HIDEPLOT + i, (LPARAM)lpgw->hideplot[i]);
+						if (i < MAXPLOTSHIDE)
+							SendMessage(lpgw->hToolbar, TB_CHECKBUTTON, M_HIDEPLOT + i, (LPARAM)lpgw->hideplot[i]);
+						lpgw->buffervalid = FALSE;
 						GetClientRect(hwnd, &rect);
 						InvalidateRect(hwnd, (LPRECT) &rect, 1);
 						UpdateWindow(hwnd);
@@ -3502,6 +3736,7 @@ WndGraphProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 					return 0;
 				case M_HIDEGRID:
 					lpgw->hidegrid = SendMessage(lpgw->hToolbar, TB_ISBUTTONCHECKED, LOWORD(wParam), (LPARAM)0);
+					lpgw->buffervalid = FALSE;
 					GetClientRect(hwnd, &rect);
 					InvalidateRect(hwnd, (LPRECT) &rect, 1);
 					UpdateWindow(hwnd);
@@ -3545,6 +3780,7 @@ WndGraphProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 						CheckMenuItem(lpgw->hPopMenu, M_GRAPH_TO_TOP, MF_BYCOMMAND | MF_CHECKED);
 					else
 						CheckMenuItem(lpgw->hPopMenu, M_GRAPH_TO_TOP, MF_BYCOMMAND | MF_UNCHECKED);
+					lpgw->buffervalid = FALSE;
 					DestroyPens(lpgw);
 					DestroyFonts(lpgw);
 					hdc = GetDC(hwnd);
@@ -3560,7 +3796,9 @@ WndGraphProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			/* handle toolbar events  */
 			if ((LOWORD(wParam) >= M_HIDEPLOT) && (LOWORD(wParam) < (M_HIDEPLOT + MAXPLOTSHIDE))) {
 				unsigned button = LOWORD(wParam) - (M_HIDEPLOT);
-				lpgw->hideplot[button] = SendMessage(lpgw->hToolbar, TB_ISBUTTONCHECKED, LOWORD(wParam), (LPARAM)0);
+				if (button < lpgw->maxhideplots)
+					lpgw->hideplot[button] = SendMessage(lpgw->hToolbar, TB_ISBUTTONCHECKED, LOWORD(wParam), (LPARAM)0);
+				lpgw->buffervalid = FALSE;
 				GetClientRect(hwnd, &rect);
 				InvalidateRect(hwnd, (LPRECT) &rect, 1);
 				UpdateWindow(hwnd);
@@ -3659,11 +3897,13 @@ WndGraphProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		case WM_ERASEBKGND:
 			return(1); /* we erase the background ourselves */
 		case WM_PAINT: {
-			HDC memdc;
-			HBITMAP membmp, oldbmp;
+			HDC memdc = NULL;
+			HBITMAP oldbmp;
 			LONG width, height;
+			LONG wwidth, wheight;
 			int sampling;
 			RECT memrect;
+			RECT wrect;
 
 			hdc = BeginPaint(hwnd, &ps);
 			SetMapMode(hdc, MM_TEXT);
@@ -3672,47 +3912,75 @@ WndGraphProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SetViewportExtEx(hdc, rect.right, rect.bottom, NULL);
 			/* double buffering */
 			if (lpgw->doublebuffer) {
-			    /* choose oversampling */
-			    if (lpgw->oversample)
-			        sampling = 2; /* anything bigger than that makes the computer crawl ... */
-			    else
-			        sampling = 1;
+				/* choose oversampling */
+				if (lpgw->oversample)
+					sampling = 2; /* anything bigger than that makes the computer crawl ... */
+				else
+					sampling = 1;
 
-			    /* create memory device context for double buffering */
-			    width = rect.right - rect.left;
-			    height = rect.bottom - rect.top;
-			    memdc = CreateCompatibleDC(hdc);
-			    memrect.left = 0;
-			    memrect.right = width * sampling + sampling/2;
-			    memrect.top = 0;
-			    memrect.bottom = height * sampling + sampling/2;
-			    membmp = CreateCompatibleBitmap(hdc, memrect.right, memrect.bottom);
-			    oldbmp = (HBITMAP)SelectObject(memdc, membmp);
+				/* Has window resized? */
+				GetWindowRect(hwnd, &wrect);
+				wwidth =  wrect.right - wrect.left;
+				wheight = wrect.bottom - wrect.top;
+				if ((lpgw->Size.x != wwidth) || (lpgw->Size.y != wheight)) {
+					RECT rect;
+					DestroyFonts(lpgw);
+					GetPlotRect(lpgw, &rect);
+					MakeFonts(lpgw, (LPRECT)&rect, hdc);
+					lpgw->buffervalid = FALSE;
+				}
 
-			    /* TODO: we really should cache the results ... */
-			    if (sampling > 1) {
-			        lpgw->sampling = sampling;
-			        DestroyFonts(lpgw);
-			        MakeFonts(lpgw, &memrect, memdc);
-			    }
+				/* create memory device context for double buffering */
+				width = rect.right - rect.left;
+				height = rect.bottom - rect.top;
+				memdc = CreateCompatibleDC(hdc);
+				memrect.left = 0;
+				memrect.right = width * sampling + sampling/2;
+				memrect.top = 0;
+				memrect.bottom = height * sampling + sampling/2;
 
-			    /* draw into memdc, then copy to hdc */
-			    drawgraph(lpgw, memdc, &memrect);
-			    if (sampling == 1)
-			        BitBlt(hdc, rect.left, rect.top, width, height, memdc, 0, 0, SRCCOPY);
-			    else {
-			        int stretch = SetStretchBltMode(hdc, HALFTONE);
-			        StretchBlt(hdc, rect.left, rect.top, width, height,
-			                   memdc,0, 0, memrect.right, memrect.bottom,
-			                   SRCCOPY);
-			        SetStretchBltMode(hdc, stretch);
-			    }
-			    lpgw->sampling = 1;
+				if (!lpgw->buffervalid || (lpgw->hBitmap == NULL)) {
+					if (lpgw->hBitmap != NULL)
+						DeleteObject(lpgw->hBitmap);
+					lpgw->hBitmap = CreateCompatibleBitmap(hdc, memrect.right, memrect.bottom);
+					oldbmp = (HBITMAP)SelectObject(memdc, lpgw->hBitmap);
+					/* Update window size */
+					lpgw->Size.x = wwidth;
+					lpgw->Size.y = wheight;
 
-			    /* select the old bitmap back into the device context */
-			    SelectObject(memdc, oldbmp);
-			    DeleteObject(membmp);
-			    DeleteDC(memdc);
+					/* TODO: we really should cache the results ... */
+					if (sampling > 1) {
+						lpgw->sampling = sampling;
+						DestroyFonts(lpgw);
+						MakeFonts(lpgw, &memrect, memdc);
+					}
+
+					/* draw into memdc, then copy to hdc */
+					drawgraph(lpgw, memdc, &memrect);
+
+					/* drawing by gnuplot still in progress... */
+					lpgw->buffervalid = !lpgw->locked;
+				} else {
+					oldbmp = (HBITMAP) SelectObject(memdc, lpgw->hBitmap);
+				}
+				if (lpgw->buffervalid) {
+					if (sampling == 1)
+						BitBlt(hdc, rect.left, rect.top, width, height, memdc, 0, 0, SRCCOPY);
+					else {
+						int stretch = SetStretchBltMode(hdc, HALFTONE);
+						StretchBlt(hdc, rect.left, rect.top, width, height,
+								   memdc,0, 0, memrect.right, memrect.bottom,
+								   SRCCOPY);
+						SetStretchBltMode(hdc, stretch);
+					}
+				}
+				lpgw->sampling = 1;
+
+				/* select the old bitmap back into the device context */
+				if (memdc != NULL) {
+					SelectObject(memdc, oldbmp);
+					DeleteDC(memdc);
+				}
 			} else {
 			    drawgraph(lpgw, hdc, &rect);
 			}
@@ -3741,10 +4009,28 @@ WndGraphProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 			if ((wParam == SIZE_MAXIMIZED) || (wParam == SIZE_RESTORED)) {
 				RECT rect;
-				SendMessage(hwnd,WM_SYSCOMMAND,M_REBUILDTOOLS,0L);
-				GetWindowRect(hwnd,&rect);
-				lpgw->Size.x = rect.right-rect.left;
-				lpgw->Size.y = rect.bottom-rect.top;
+				unsigned width, height;
+
+				GetWindowRect(hwnd, &rect);
+				width = rect.right - rect.left;
+				height = rect.bottom - rect.top;
+				/* Ignore minimize / de-minize */
+				if ((lpgw->Size.x != width) || (lpgw->Size.y != height)) {
+					lpgw->Size.x = width;
+					lpgw->Size.y = height;
+
+					/* remake fonts */
+					lpgw->buffervalid = FALSE;
+					DestroyFonts(lpgw);
+					GetPlotRect(lpgw, &rect);
+					hdc = GetDC(hwnd);
+					MakeFonts(lpgw, &rect, hdc);
+					ReleaseDC(hwnd, hdc);
+
+					GetClientRect(hwnd, &rect);
+					InvalidateRect(hwnd, &rect, 1);
+					UpdateWindow(hwnd);
+				}
 			}
 			break;
 #ifndef WGP_CONSOLE
@@ -3754,6 +4040,12 @@ WndGraphProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			break;
 #endif
 		case WM_DESTROY:
+			lpgw->buffervalid = FALSE;
+			DeleteObject(lpgw->hBitmap);
+			lpgw->hBitmap = NULL;
+			clear_tooltips(lpgw);
+			DestroyWindow(lpgw->hTooltip);
+			lpgw->hTooltip = NULL;
 			DestroyPens(lpgw);
 			DestroyFonts(lpgw);
 #ifdef USE_MOUSE
@@ -4050,13 +4342,17 @@ UpdateToolbar(LPGW lpgw)
 		lpgw->hidegrid = FALSE;
 		SendMessage(lpgw->hToolbar, TB_CHECKBUTTON, M_HIDEGRID, (LPARAM)FALSE);
 	}
-	for (i = 0; i < MAXPLOTSHIDE; i++) {
+	for (i = 0; i < GPMAX(MAXPLOTSHIDE, lpgw->maxhideplots); i++) {
 		if (i < lpgw->numplots) {
-			SendMessage(lpgw->hToolbar, TB_HIDEBUTTON, M_HIDEPLOT + i, (LPARAM)FALSE);
+			if (i < MAXPLOTSHIDE)
+				SendMessage(lpgw->hToolbar, TB_HIDEBUTTON, M_HIDEPLOT + i, (LPARAM)FALSE);
 		} else {
-			lpgw->hideplot[i] = FALSE;
-			SendMessage(lpgw->hToolbar, TB_HIDEBUTTON, M_HIDEPLOT + i, (LPARAM)TRUE);
-			SendMessage(lpgw->hToolbar, TB_CHECKBUTTON, M_HIDEPLOT + i, (LPARAM)FALSE);
+			if (i < lpgw->maxhideplots)
+				lpgw->hideplot[i] = FALSE;
+			if (i < MAXPLOTSHIDE) {
+				SendMessage(lpgw->hToolbar, TB_HIDEBUTTON, M_HIDEPLOT + i, (LPARAM)TRUE);
+				SendMessage(lpgw->hToolbar, TB_CHECKBUTTON, M_HIDEPLOT + i, (LPARAM)FALSE);
+			}
 		}
 	}
 }

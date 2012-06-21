@@ -1,5 +1,5 @@
 /*
- * $Id: wgnuplib.h,v 1.53 2011/11/18 07:48:28 markisch Exp $
+ * $Id: wgnuplib.h,v 1.56 2012/05/23 17:27:34 markisch Exp $
  */
 
 /* GNUPLOT - win/wgnuplib.h */
@@ -39,6 +39,9 @@
  *
  *   Russell Lang
  */
+
+#ifndef WGNUPLIB_H
+#define WGNUPLIB_H
 
 #include <windows.h>
 #include "screenbuf.h"
@@ -228,11 +231,15 @@ void WDPROC AboutBox(HWND hwnd, LPSTR str);
  * by the 'Line styles...' dialog, and save to/from wgnuplot.ini). */
 #define WGNUMPENS 15
 
-/* maximum number of plots which can be enabled/disabled via toolbar */
-#define MAXPLOTSHIDE 10
-
 /* maximum number of different colors per palette, used to be hardcoded (256) */
 #define WIN_PAL_COLORS 4096
+
+/* hypertext structure
+*/
+struct tooltips {
+	LPWSTR text;
+	RECT rect;
+};
 
 /* Information about one graphical operation to be stored by the
  * driver for the sake of redraws. Array of GWOP kept in global block */
@@ -289,6 +296,7 @@ struct GWOPBLK {			/* kept in local memory */
 #define W_image 45
 #define W_layer 46
 #define W_text_encoding 47
+#define W_hypertext 48
 
 typedef struct tagGW {
 	GP_LPPRINT	lpr;		/* must be first */
@@ -309,6 +317,8 @@ typedef struct tagGW {
 	HWND	hToolbar;
 	int		ToolbarHeight;
 	HMENU	hPopMenu;	/* popup menu */
+	HBITMAP	hBitmap;	/* bitmap of current graph */
+	BOOL	buffervalid;	/* indicates of hBitmap is valid */
 
 	struct GWOPBLK *gwopblk_head;
 	struct GWOPBLK *gwopblk_tail;
@@ -325,12 +335,18 @@ typedef struct tagGW {
 	BOOL	polyaa;		/* anti-aliasing for polygons ? */
 	BOOL	patternaa;	/* anti-aliasing for polygons ? */
 
-	BOOL	hideplot[MAXPLOTSHIDE];
+	BOOL	*hideplot;
+	unsigned int maxhideplots;
 	BOOL	hidegrid;
 	unsigned int numplots;
 	BOOL	hasgrid;
 	LPRECT	keyboxes;
 	unsigned int maxkeyboxes;
+
+	HWND	hTooltip;	/* tooltip windows for hypertext */
+	struct tooltips * tooltips;
+	unsigned int maxtooltips;
+	unsigned int numtooltips;
 
 	int		htic;		/* horizontal size of point symbol (xmax units) */
 	int 	vtic;		/* vertical size of point symbol (ymax units)*/
@@ -410,3 +426,5 @@ void WIN_update_options __PROTO((void));
 
 
 /* ================================== */
+#endif
+

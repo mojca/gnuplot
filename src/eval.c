@@ -1,5 +1,5 @@
 #ifndef lint
-static char *RCSid() { return RCSid("$Id: eval.c,v 1.100 2012/04/18 00:13:46 sfeam Exp $"); }
+static char *RCSid() { return RCSid("$Id: eval.c,v 1.102 2012/06/19 18:11:06 sfeam Exp $"); }
 #endif
 
 /* GNUPLOT - eval.c */
@@ -43,6 +43,7 @@ static char *RCSid() { return RCSid("$Id: eval.c,v 1.100 2012/04/18 00:13:46 sfe
 #include "syscfg.h"
 #include "alloc.h"
 #include "datafile.h"
+#include "datablock.h"
 #include "internal.h"
 #include "specfun.h"
 #include "standard.h"
@@ -249,6 +250,25 @@ real(struct value *val)
     }
     /* NOTREACHED */
     return ((double) 0.0);
+}
+
+
+/* returns the real part of val, converted to int if necessary */
+int
+real_int(struct value *val)
+{
+    switch (val->type) {
+    case INTGR:
+	return val->v.int_val;
+    case CMPLX:
+	return (int) val->v.cmplx_val.real;
+    case STRING:
+	return atoi(val->v.string_val);
+    default:
+	int_error(NO_CARET, "unknown type in real_int()");
+    }
+    /* NOTREACHED */
+    return 0;
 }
 
 
@@ -685,7 +705,7 @@ get_udv_by_name(char *key)
 }
 
 void
-del_udv_by_name( char *key, TBOOLEAN wildcard )
+del_udv_by_name(char *key, TBOOLEAN wildcard)
 {
     struct udvt_entry *udv_ptr = first_udv;
 
@@ -694,6 +714,7 @@ del_udv_by_name( char *key, TBOOLEAN wildcard )
 	if (!wildcard && !strcmp(key, udv_ptr->udv_name)) {
 	    udv_ptr->udv_undef = TRUE;
 	    gpfree_string(&(udv_ptr->udv_value));
+	    gpfree_datablock(&(udv_ptr->udv_value));
 	    break;
 	}
 
@@ -701,6 +722,7 @@ del_udv_by_name( char *key, TBOOLEAN wildcard )
 	if ( wildcard && !strncmp(key, udv_ptr->udv_name, strlen(key)) ) {
 	    udv_ptr->udv_undef = TRUE;
 	    gpfree_string(&(udv_ptr->udv_value));
+	    gpfree_datablock(&(udv_ptr->udv_value));
 	    /* no break - keep looking! */
 	}
 

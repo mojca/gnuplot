@@ -1,5 +1,5 @@
 #ifndef lint
-static char *RCSid() { return RCSid("$Id: fit.c,v 1.79 2011/11/29 01:07:52 sfeam Exp $"); }
+static char *RCSid() { return RCSid("$Id: fit.c,v 1.82 2012/06/19 18:11:06 sfeam Exp $"); }
 #endif
 
 /*  NOTICE: Change of Copyright Status
@@ -103,7 +103,7 @@ typedef enum marq_res marq_res_t;
 #define INITIAL_VALUE 1.0
 
 /* Relative change for derivatives */
-#define DELTA	    0.001
+#define DELTA       0.001
 
 #define MAX_DATA    2048
 #define MAX_PARAMS  32
@@ -129,13 +129,14 @@ char fitbuf[256];
 char *fitlogfile = NULL;
 TBOOLEAN fit_errorvariables = FALSE;
 TBOOLEAN fit_quiet = FALSE;
+TBOOLEAN fit_errorscaling = TRUE;
 
 /* private variables: */
 
 static int max_data;
 static int max_params;
 
-static double epsilon = 1e-5;	/* convergence limit */
+static double epsilon = DEF_FIT_LIMIT;	/* convergence limit */
 static int maxiter = 0;
 
 static char *fit_script = NULL;
@@ -175,7 +176,9 @@ typedef char fixstr[MAX_ID_LEN+1];
 
 static fixstr *par_name;
 
-static double startup_lambda = 0, lambda_down_factor = LAMBDA_DOWN_FACTOR, lambda_up_factor = LAMBDA_UP_FACTOR;
+static double startup_lambda = 0;
+static double lambda_down_factor = LAMBDA_DOWN_FACTOR;
+static double lambda_up_factor = LAMBDA_UP_FACTOR;
 
 /*****************************************************************
 			 internal Prototypes
@@ -195,14 +198,14 @@ static void show_fit __PROTO((int i, double chisq, double last_chisq, double *a,
 			      double lambda, FILE * device));
 static void log_axis_restriction __PROTO((FILE *log_f, AXIS_INDEX axis, char *name));
 static TBOOLEAN is_empty __PROTO((char *s));
-static double getdvar __PROTO((const char *varname));
 static int getivar __PROTO((const char *varname));
-static void setvar __PROTO((char *varname, struct value data));
-static char *get_next_word __PROTO((char **s, char *subst));
+static double getdvar __PROTO((const char *varname));
 static double createdvar __PROTO((char *varname, double value));
+static void setvar __PROTO((char *varname, double value));
+static void setvarerr __PROTO((char *varname, double value));
+static char *get_next_word __PROTO((char **s, char *subst));
 static void splitpath __PROTO((char *s, char *p, char *f));
 static void backup_file __PROTO((char *, const char *));
-static void setvarerr __PROTO((char *varname, double value));
 
 /*****************************************************************
     Small function to write the last fit command into a file
@@ -507,16 +510,14 @@ call_gnuplot(double *par, double *data)
     struct value v;
 
     /* set parameters first */
-    for (i = 0; i < num_params; i++) {
-	(void) Gcomplex(&v, par[i], 0.0);
-	setvar(par_name[i], v);
-    }
+    for (i = 0; i < num_params; i++)
+	setvar(par_name[i], par[i]);
 
     for (i = 0; i < num_data; i++) {
       /* calculate fit-function value */
       /* initialize extra dummy variables from the corresponding
 	 actual variables, if any. */
-      for (j=0; j<5; j++) {
+      for (j = 0; j < 5; j++) {
 	struct udvt_entry *udv = add_udv_by_name(c_dummy_var[j]);
 	(void) Gcomplex(&func.dummy_values[j],
 			udv->udv_undef ? 0 : getdvar(c_dummy_var[j]),
@@ -559,16 +560,13 @@ fit_interrupt()
 	case 'e':
 	case 'E':{
 		int i;
-		struct value v;
 		const char *tmp;
 
 		tmp = fit_script ? fit_script : DEFAULT_CMD;
 		fprintf(STANDARD, "executing: %s", tmp);
 		/* set parameters visible to gnuplot */
-		for (i = 0; i < num_params; i++) {
-		    (void) Gcomplex(&v, a[i], 0.0);
-		    setvar(par_name[i], v);
-		}
+		for (i = 0; i < num_params; i++)
+		    setvar(par_name[i], a[i]);
 		do_string(tmp);
 	    }
 	}
@@ -715,9 +713,9 @@ regress(double a[])
 	for (k = 0; k < num_params; k++)
 	    Dblf3("%-15.15s = %-15g\n", par_name[k], a[k]);
     } else {
-	int ndf          = num_data - num_params; 
+	int ndf          = num_data - num_params;
 	double stdfit    = sqrt(chisq/ndf);
-	
+
 	Dblf2("degrees of freedom    (FIT_NDF)                        : %d\n", ndf);
 	Dblf2("rms of residuals      (FIT_STDFIT) = sqrt(WSSR/ndf)    : %g\n", stdfit);
 	Dblf2("variance of residuals (reduced chisquare) = WSSR/ndf   : %g\n\n", chisq/ndf);
@@ -759,12 +757,17 @@ regress(double a[])
 		covar[i][j] /= dpar[i] * dpar[j];
 	}
 
-	/* scale parameter errors based on chisq */
-	chisq = sqrt(chisq / (num_data - num_params));
-	for (i = 0; i < num_params; i++)
-	    dpar[i] *= chisq;
+	if ((fit_errorscaling) || (columns < 3)) {
+	    /* scale parameter errors based on chisq */
+	    chisq = sqrt(chisq / (num_data - num_params));
+	    for (i = 0; i < num_params; i++)
+		dpar[i] *= chisq;
 
-	Dblf("Final set of parameters            Asymptotic Standard Error\n");
+	    Dblf("Final set of parameters            Asymptotic Standard Error\n");
+	} else {
+	    Dblf("Final set of parameters            Standard Deviation\n");
+	}
+
 	Dblf("=======================            ==========================\n\n");
 
 	for (i = 0; i < num_params; i++) {
@@ -804,11 +807,7 @@ regress(double a[])
      * its original one after the derivatives have been calculated
      */
     /* restore last parameter's value (not done by calculate) */
-    {
-	struct value val;
-	Gcomplex(&val, a[num_params - 1], 0.0);
-	setvar(par_name[num_params - 1], val);
-    }
+    setvar(par_name[num_params - 1], a[num_params - 1]);
 
     /* call destructor for allocated vars */
     lambda = -2;		/* flag value, meaning 'destruct!' */
@@ -892,12 +891,12 @@ init_fit()
 ******************************************************************/
 
 static void
-setvar(char *varname, struct value data)
+setvar(char *varname, double data)
 {
-    struct udvt_entry *udv_ptr = add_udv_by_name(varname);
-    udv_ptr->udv_value = data;
-    udv_ptr->udv_undef = FALSE;
+    /* Despite its name it is actually usable for any variable. */
+    fill_gpval_float(varname, data);
 }
+
 
 /*****************************************************************
             Set a GNUPLOT user-defined variable for an error
@@ -908,83 +907,58 @@ setvar(char *varname, struct value data)
 static void
 setvarerr(char *varname, double value)
 {
-	struct value errval;    /* This will hold the gnuplot value created from value*/
-	char* pErrValName;      /* The name of the (new) error variable */
-
 	/* Create the variable name by appending _err */
-	pErrValName = gp_alloc(strlen(varname)+sizeof(char)+4, "");
-
-	sprintf(pErrValName,"%s_err",varname);
-	Gcomplex(&errval, value, 0.0);
-	setvar(pErrValName, errval);
+	char * pErrValName = gp_alloc(strlen(varname) + 5 * sizeof(char), "setvarerr");
+	sprintf(pErrValName, "%s_err", varname);
+	setvar(pErrValName, value);
 	free(pErrValName);
 }
 
+
 /*****************************************************************
-    Read INTGR Variable value, return 0 if undefined or wrong type
+    Get integer variable value
 *****************************************************************/
 static int
 getivar(const char *varname)
 {
-    struct udvt_entry *udv_ptr = first_udv;
-
-    while (udv_ptr) {
-	if (!strcmp(varname, udv_ptr->udv_name))
-	    return udv_ptr->udv_value.type == INTGR
-		? udv_ptr->udv_value.v.int_val	/* valid */
-		: 0;		/* wrong type */
-	udv_ptr = udv_ptr->next_udv;
-    }
-    return 0;			/* not in table */
+    struct udvt_entry * v = get_udv_by_name((char *)varname);
+    if ((v != NULL) && (!v->udv_undef))
+	return real_int(&(v->udv_value));
+    else
+	return 0;
 }
 
 
 /*****************************************************************
-    Read DOUBLE Variable value, return 0 if undefined or wrong type
-   I don't think it's a problem that it's an integer - div
+    Get double variable value
 *****************************************************************/
 static double
 getdvar(const char *varname)
 {
-    struct udvt_entry *udv_ptr = first_udv;
-
-    for (; udv_ptr; udv_ptr = udv_ptr->next_udv)
-	if (strcmp(varname, udv_ptr->udv_name) == 0)
-	    return real(&(udv_ptr->udv_value));
-
-    /* get here => not found */
-    return 0;
+    struct udvt_entry * v = get_udv_by_name((char *)varname);
+    if ((v != NULL) && (!v->udv_undef))
+	return real(&(v->udv_value));
+    else
+	return 0;
 }
+
 
 /*****************************************************************
    like getdvar, but
+   - create it and set to `value` if not found or undefined
    - convert it from integer to real if necessary
-   - create it with value INITIAL_VALUE if not found or undefined
 *****************************************************************/
 static double
 createdvar(char *varname, double value)
 {
-    struct udvt_entry *udv_ptr = first_udv;
-
-    for (; udv_ptr; udv_ptr = udv_ptr->next_udv)
-	if (strcmp(varname, udv_ptr->udv_name) == 0) {
-	    if (udv_ptr->udv_undef) {
-		udv_ptr->udv_undef = 0;
-		(void) Gcomplex(&udv_ptr->udv_value, value, 0.0);
-	    } else if (udv_ptr->udv_value.type == INTGR) {
-		(void) Gcomplex(&udv_ptr->udv_value, (double) udv_ptr->udv_value.v.int_val, 0.0);
-	    }
-	    return real(&(udv_ptr->udv_value));
-	}
-    /* get here => not found */
-
-    {
-	struct value tempval;
-	(void) Gcomplex(&tempval, value, 0.0);
-	setvar(varname, tempval);
+    struct udvt_entry *udv_ptr = add_udv_by_name((char *)varname);
+    if (udv_ptr->udv_undef) { /* new variable */
+	udv_ptr->udv_undef = FALSE;
+	Gcomplex(&udv_ptr->udv_value, value, 0.0);
+    } else if (udv_ptr->udv_value.type == INTGR) { /* convert to CMPLX */
+	Gcomplex(&udv_ptr->udv_value, (double) udv_ptr->udv_value.v.int_val, 0.0);
     }
-
-    return value;
+    return real(&(udv_ptr->udv_value));
 }
 
 
@@ -1089,9 +1063,7 @@ update(char *pfile, char *npfile)
 	}
 	/* now modify */
 
-	if ((pval = getdvar(pname)) == 0)
-	    pval = (double) getivar(pname);
-
+	pval = getdvar(pname);
 	sprintf(sstr, "%g", pval);
 	if (!strchr(sstr, '.') && !strchr(sstr, 'e'))
 	    strcat(sstr, ".0");	/* assure CMPLX-type */
@@ -1296,9 +1268,11 @@ fit_command()
     token2 = c_token;
 
     /* get filename */
-    file_name = try_to_get_string();
-    if (!file_name)
-	int_error(c_token, "missing filename");
+    file_name = string_or_express(NULL);
+    if (file_name )
+	file_name = gp_strdup(file_name);
+    else
+	int_error(token2, "missing filename or datablock");
 
     /* use datafile module to parse the datafile and qualifiers */
     df_set_plot_mode(MODE_QUERY);  /* Does nothing except for binary datafiles */
@@ -1346,13 +1320,13 @@ fit_command()
     else if (num_ranges == num_indep+1 && num_indep < 5) {
       /* last range spec is for the Z axis */
       int i = var_order[num_ranges-1]; /* index for the last range spec */
-      
+
       Z_AXIS.autoscale = axis_array[i].autoscale;
       if (!(axis_array[i].autoscale & AUTOSCALE_MIN))
 	Z_AXIS.min = axis_array[i].min;
       if (!(axis_array[i].autoscale & AUTOSCALE_MAX))
 	Z_AXIS.max = axis_array[i].max;
-      
+
       /* restore former values */
       axis_array[i] = saved_axis;
       dummy_token[num_ranges-1] = dummy_token[6];
@@ -1366,24 +1340,31 @@ fit_command()
     tmpd = getdvar(FITLIMIT);	/* get epsilon if given explicitly */
     if (tmpd < 1.0 && tmpd > 0.0)
 	epsilon = tmpd;
+    else
+	epsilon = DEF_FIT_LIMIT;
 
     /* HBB 970304: maxiter patch */
     maxiter = getivar(FITMAXITER);
 
     /* get startup value for lambda, if given */
     tmpd = getdvar(FITSTARTLAMBDA);
-
     if (tmpd > 0.0) {
 	startup_lambda = tmpd;
 	printf("Lambda Start value set: %g\n", startup_lambda);
+    } else {
+	startup_lambda = 0;
     }
+
     /* get lambda up/down factor, if given */
     tmpd = getdvar(FITLAMBDAFACTOR);
-
     if (tmpd > 0.0) {
 	lambda_up_factor = lambda_down_factor = tmpd;
 	printf("Lambda scaling factors reset:  %g\n", lambda_up_factor);
+    } else {
+	lambda_down_factor = LAMBDA_DOWN_FACTOR;
+	lambda_up_factor = LAMBDA_UP_FACTOR;
     }
+
     free(fit_script);
     fit_script = NULL;
     if ((tmp = getenv(FITSCRIPT)) != NULL) {
@@ -1499,7 +1480,7 @@ fit_command()
 	/* check Z value too */
 	{
 	  AXIS *this = axis_array + FIRST_Z_AXIS;
-	  
+
 	  if (!(this->autoscale & AUTOSCALE_MIN) && (v[i] < this->min)) {
 	    skipped[FIRST_Z_AXIS]++;
 	    goto out_of_range;
@@ -1627,10 +1608,8 @@ fit_command()
 	    }
 	    /* make fixed params visible to GNUPLOT */
 	    if (fixed) {
-		struct value tempval;
-		(void) Gcomplex(&tempval, tmp_par, 0.0);
 		/* use parname as temp */
-		setvar(par_name[num_params], tempval);
+		setvar(par_name[num_params], tmp_par);
 	    } else {
 		if (num_params >= max_params) {
 		    max_params = (max_params * 3) / 2;

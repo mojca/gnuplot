@@ -1,5 +1,5 @@
 #ifndef lint
-static char *RCSid() { return RCSid("$Id: datafile.c,v 1.221 2012/05/09 19:27:04 sfeam Exp $"); }
+static char *RCSid() { return RCSid("$Id: datafile.c,v 1.224 2012/06/19 18:11:06 sfeam Exp $"); }
 #endif
 
 /* GNUPLOT - datafile.c */
@@ -143,6 +143,7 @@ static char *RCSid() { return RCSid("$Id: datafile.c,v 1.221 2012/05/09 19:27:04
  */
 
 #include "datafile.h"
+#include "datablock.h"
 
 #include "alloc.h"
 #include "axis.h"
@@ -200,7 +201,7 @@ int df_datum;                   /* suggested x value if none given */
 AXIS_INDEX df_axis[MAXDATACOLS];
 TBOOLEAN df_matrix = FALSE;     /* indicates if data originated from a 2D or 3D format */
 
-void *df_datablock;		/* pixel data from an external library (e.g. libgd) */
+void *df_pixeldata;		/* pixel data from an external library (e.g. libgd) */
 
 /* jev -- the 'thru' function --- NULL means no dummy vars active */
 /* HBB 990829: moved this here, from command.c */
@@ -278,6 +279,10 @@ static int line_count = 0;      /* line counter */
 static int df_pseudodata = 0;
 static int df_pseudorecord = 0;
 static int df_pseudospan = 0;
+
+/* for datablocks */
+static TBOOLEAN df_datablock = FALSE;
+static char **df_datablock_line = NULL;
 
 /* parsing stuff */
 struct use_spec_s use_spec[MAXDATACOLS];
@@ -601,6 +606,9 @@ df_gets()
     /* Special pseudofiles '+' and '++' return coords of sample */
     if (df_pseudodata)
 	return df_generate_pseudodata();
+
+    if (df_datablock)
+	return *(df_datablock_line++);
 
     if (!fgets(line, max_line_len, data_fp))
 	return NULL;
@@ -972,7 +980,7 @@ df_open(const char *cmd_filename, int max_using, struct curve_points *plot)
     lastpoint = lastline = MAXINT;
 
     df_binary_file = df_matrix_file = FALSE;
-    df_datablock = NULL;
+    df_pixeldata = NULL;
     df_num_bin_records = 0;
     df_matrix = FALSE;
     df_nonuniform_matrix = FALSE;
@@ -1010,6 +1018,8 @@ df_open(const char *cmd_filename, int max_using, struct curve_points *plot)
 
 	/* look for binary / matrix */
 	if (almost_equals(c_token, "bin$ary")) {
+	    if (df_filename[0] == '$')
+		int_error(c_token, "data blocks cannot be binary");
 	    c_token++;
 	    if (df_binary_file) {
 		duplication=TRUE;
@@ -1126,6 +1136,8 @@ df_open(const char *cmd_filename, int max_using, struct curve_points *plot)
     df_pseudodata = 0;
     df_pseudorecord = 0;
     df_pseudospan = 0;
+    df_datablock = FALSE;
+    df_datablock_line = NULL;
 
     /* here so it's not done for every line in df_readline */
     if (max_line_len < DATA_LINE_BUFSIZ) {
@@ -1157,6 +1169,9 @@ df_open(const char *cmd_filename, int max_using, struct curve_points *plot)
 	    df_pseudodata = 1;
 	else if (df_filename[1] == '+' && strlen(df_filename) == 2)
 	    df_pseudodata = 2;
+    } else if (df_filename[0] == '$') {
+	df_datablock = TRUE;
+	df_datablock_line = get_datablock(df_filename);
     } else {
 	/* filename cannot be static array! */
 	gp_expand_tilde(&df_filename);
@@ -1218,7 +1233,7 @@ df_close()
     /* paranoid - mark $n and column(n) as invalid */
     df_no_cols = 0;
 
-    if (!data_fp)
+    if (!data_fp && !df_datablock)
 	return;
 
     if (ydata_func.at) {
@@ -1241,7 +1256,7 @@ df_close()
 	}
     }
 
-    if (!mixed_data_fp) {
+    if (!mixed_data_fp && !df_datablock) {
 #if defined(PIPES)
 	if (df_pipe_open) {
 	    (void) pclose(data_fp);
@@ -1496,7 +1511,7 @@ void plot_ticlabel_using(int axis)
 int
 df_readline(double v[], int max)
 {
-    if (!data_fp && !df_pseudodata)
+    if (!data_fp && !df_pseudodata && !df_datablock)
 	return DF_EOF;
 
     if (df_read_binary)
@@ -1521,8 +1536,6 @@ df_readascii(double v[], int max)
 {
     char *s;
 
-    assert(data_fp != NULL || df_pseudodata);
-    assert(max_line_len);       /* alloc-ed in df_open() */
     assert(max <= MAXDATACOLS);
 
     /* catch attempt to read past EOF on mixed-input */
@@ -1929,6 +1942,7 @@ df_readascii(double v[], int max)
 		}
 		/* Special case to make 'using 0' et al. to work with labels */
 		if (use_spec[output].expected_type == CT_STRING
+		    && (!(use_spec[output].at) || !df_tokens[output])
 		    && (column == -2 || column == -1 || column == 0)) {
 		    char *s = gp_alloc(32*sizeof(char), 
 			"temp string for label hack");
@@ -4204,7 +4218,6 @@ df_readbinary(double v[], int max)
     static int first_matrix_row_col_count;
     TBOOLEAN saved_first_matrix_column = FALSE;
 
-    assert(data_fp != NULL);
     assert(max <= MAXDATACOLS);
     assert(df_max_bininfo_cols > df_no_bin_cols);
     assert(df_no_bin_cols);
@@ -4417,7 +4430,7 @@ df_readbinary(double v[], int max)
 		break;
 
 	    /* Read in a "column", i.e., a binary value of various types. */
-	    if (df_datablock) {
+	    if (df_pixeldata) {
 		io_val.uc = df_libgd_get_pixel(df_M_count, df_N_count, i);
 	    } else
 

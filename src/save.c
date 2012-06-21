@@ -1,5 +1,5 @@
 #ifndef lint
-static char *RCSid() { return RCSid("$Id: save.c,v 1.201 2012/03/13 18:56:01 sfeam Exp $"); }
+static char *RCSid() { return RCSid("$Id: save.c,v 1.203 2012/06/13 20:12:59 sfeam Exp $"); }
 #endif
 
 /* GNUPLOT - save.c */
@@ -136,7 +136,7 @@ save_variables__sub(FILE *fp)
 
     while (udv) {
 	if (!udv->udv_undef) {
-	    if (strncmp(udv->udv_name,"GPVAL_",6) 
+	    if (strncmp(udv->udv_name,"GPVAL_",6)
 	     && strncmp(udv->udv_name,"MOUSE_",6)
 	     && strncmp(udv->udv_name,"NaN",4)) {
 		fprintf(fp, "%s = ", udv->udv_name);
@@ -240,7 +240,7 @@ set bar %f %s\n",
 #ifdef EAM_OBJECTS
     /* Default rectangle style */
     fprintf(fp, "set style rectangle %s fc ",
-	    default_rectangle.layer > 0 ? "front" : 
+	    default_rectangle.layer > 0 ? "front" :
 	    default_rectangle.layer < 0 ? "behind" : "back");
     if (default_rectangle.lp_properties.use_palette)
 	save_pm3dcolor(fp, &default_rectangle.lp_properties.pm3d_color);
@@ -312,7 +312,7 @@ set bar %f %s\n",
     /* Grid back/front controls tics also. Make sure it is saved */
     if (grid_layer >= 0)
 	fprintf(fp,"set tics %s\n", grid_layer == 0 ? "back" : "front");
-    
+
     if (! some_grid_selected())
 	fputs("unset grid\n", fp);
     else {
@@ -608,13 +608,14 @@ set encoding %s\n\
     fprintf(fp, "\n\
 set samples %d, %d\n\
 set isosamples %d, %d\n\
-%sset surface\n\
-%sset contour",
+%sset surface %s",
 	    samples_1, samples_2,
 	    iso_samples_1, iso_samples_2,
 	    (draw_surface) ? "" : "un",
-	    (draw_contour) ? "" : "un");
+	    (implicit_surface) ? "" : "explicit");
 
+    fprintf(fp, "\n\
+%sset contour", (draw_contour) ? "" : "un");
     switch (draw_contour) {
     case CONTOUR_NONE:
 	fputc('\n', fp);
@@ -931,7 +932,7 @@ set origin %g,%g\n",
     fprintf(fp, "set style boxplot %s %s %5.2f %soutliers pt %d separation %g labels %s %ssorted\n",
 		boxplot_opts.plotstyle == FINANCEBARS ? "financebars" : "candles",
 		boxplot_opts.limit_type == 1 ? "fraction" : "range",
-		boxplot_opts.limit_value, 
+		boxplot_opts.limit_value,
 		boxplot_opts.outliers ? "" : "no",
 		boxplot_opts.pointtype+1,
 		boxplot_opts.separation,
@@ -963,7 +964,9 @@ set origin %g,%g\n",
 
     /* HBB NEW 20020927: fit logfile name option */
     fprintf(fp, "set fit %serrorvariables",
-	    fit_errorvariables ? "" : "no");
+	fit_errorvariables ? "" : "no");
+    fprintf(fp, " %serrorscaling",
+	fit_errorscaling ? "" : "no");
     if (fitlogfile) {
 	fprintf(fp, " logfile \'%s\'", fitlogfile);
     }
@@ -1004,7 +1007,7 @@ save_tics(FILE *fp, AXIS_INDEX axis)
 		break;
 	    }
     	}
-    } else 
+    } else
         fputs(" autojustify", fp);
     fprintf(fp, "\nset %stics ", axis_defaults[axis].name);
     switch (axis_array[axis].ticdef.type) {
@@ -1049,7 +1052,7 @@ save_tics(FILE *fp, AXIS_INDEX axis)
 
     putc('\n', fp);
 
-    if (axis_array[axis].ticdef.def.user) { 
+    if (axis_array[axis].ticdef.def.user) {
 	struct ticmark *t;
 	fprintf(fp, "set %stics %s ", axis_defaults[axis].name,
 		(axis_array[axis].ticdef.type == TIC_USER) ? "" : "add");
@@ -1157,13 +1160,13 @@ save_fillstyle(FILE *fp, const struct fill_style_type *fs)
     switch(fs->fillstyle) {
     case FS_SOLID:
     case FS_TRANSPARENT_SOLID:
-	fprintf(fp, " %s solid %.2f ", 
+	fprintf(fp, " %s solid %.2f ",
 		fs->fillstyle == FS_SOLID ? "" : "transparent",
 		fs->filldensity / 100.0);
 	break;
     case FS_PATTERN:
     case FS_TRANSPARENT_PATTERN:
-	fprintf(fp, " %s pattern %d ", 
+	fprintf(fp, " %s pattern %d ",
 		fs->fillstyle == FS_PATTERN ? "" : "transparent",
 		fs->fillpattern);
 	break;
@@ -1321,6 +1324,9 @@ save_data_func_style(FILE *fp, const char *which, enum PLOT_STYLE style)
 	fputs("ellipses\n", fp);
 	break;
 #endif
+    case SURFACEGRID:
+	fputs("surfaces\n", fp);
+	break;
     default:
 	fputs("---error!---\n", fp);
     }
@@ -1352,7 +1358,7 @@ save_linetype(FILE *fp, lp_style_type *lp, TBOOLEAN show_point)
 	    fprintf(fp, " pointsize %.3f", lp->p_size);
 	fprintf(fp, " pointinterval %d", lp->p_interval);
     }
-	
+
 }
 
 
@@ -1410,7 +1416,7 @@ save_object(FILE *fp, int tag)
 	    fprintf(fp, " size ");
 	    fprintf(fp, "%s%g", e->scalex == first_axes ? "" : coord_msg[e->scalex], e->x);
 	    fprintf(fp, " arc [%g:%g] ", this_circle->arc_begin, this_circle->arc_end);
-	    fprintf(fp, this_circle->wedge ? "wedge " : "nowedge"); 
+	    fprintf(fp, this_circle->wedge ? "wedge " : "nowedge");
 	}
 
 	else if ((this_object->object_type == OBJ_ELLIPSE)

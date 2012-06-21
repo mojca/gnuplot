@@ -1,3 +1,256 @@
+2012-06-19  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* src/datablock.c src/datablock.h:  New files
+	
+	* src/command.c src/datafile.c src/eval.c src/fit.c src/gp_types.h
+	src/Makefile.am src/misc.c src/parse.c src/scanner.c src/show.c
+	src/stats.c src/tables.c:  Add support for named data blocks.
+
+	* docs/gnuplot.doc demo/imageNaN.dem demo/heatmaps.dem:
+	Document and provide demos for named data blocks.
+
+	Example use of named data blocks:
+	$Mydata << EOD
+	1 2 3
+	4 5 6
+	EOD
+	stats $Mydata using 1:2
+	plot $Mydata using 1:2 with lines, $Mydata using 1:3 with impulse
+	set print 'save.data'; print $Mydata
+
+2012-06-15  Hans-Bernhard Broeker  <broeker@physik.rwth-aachen.de>
+
+	* docs/gnuplot.doc: Cleaned blank-only lines.
+
+	* docs/Makefile.in: Regenerated.
+
+	* docs/Makefile.am (BUILT_SOURCES): allterm.h belongs here.
+	(doc2ms_DEPENDENCIES, doc2tex_DEPENDENDIES)
+	(alldoc2gih_DEPENDENCIES): Removed allterm.h from these, since
+	that would only cause it to be built at link time, which is too
+	late.
+	(check-local): Renamed from check, which would collide with
+	automake's own definition.  Add missing $(EXEEXT) and ./
+	(termdoc.$(OBJEXT)): Removed explicit dependency, since it would
+	have made exactly the wrong builds depend on allterm.h.
+
+2012-06-14  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* docs/Makefile.am: autoconf (2.68) does not automatically
+	propagate dependencies for allterm.h. Add generic dependencies as
+	documented, even though this still results in incorrect
+	ordering. Fix it empirically by adding an explicit lower-level
+	dependency at the end of the file.
+
+2012-06-14  Hans-Bernhard Broeker  <broeker@physik.rwth-aachen.de>
+
+	* docs/Makefile.in: Regenerated.
+
+	* docs/Makefile.am (gnuplot.ms, figures, gnuplot.tex)
+	(gnuplot.hlp, gnuplot.gih, allgih, wxhelp/wgnuplot.html)
+	(gnuplot.ipf, gnuplot.rtf, gnuplot.rnh): Targets running private
+	executables lacked mandatory $(EXEEXT).  Caused direct build of,
+	e.g. 'make pdf', to try and build the wrong program and fail.
+
+2012-06-13  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* src/graph3d.c src/graph3d.h src/set.c src/show.c src/save.c
+	src/unset.c src/plot3d.c src/gp_types.h src/tables.c src/graphics.c
+	docs/gnuplot.doc:
+
+	New command keywords "set surface {implicit|explicit}".
+	Until now, splot has always added isolines to generate a gridded surface
+	if an input data file looks like it contains lines along one direction
+	of the grid.  This behavior corresponds to the "implicit" keyword and
+	remains the default.  "set surface explicit" turns off the automatic
+	generation of isolines, allowing such a data file to be plotted purely
+	as unconnected lines rather than a generated grid.  You can still
+	generate a gridded surface in this case by saying
+	"plot ... with surface" rather than "plot ... with lines".
+
+	Addresses tracker item #1244775 (Theo Hopman)
+
+2012-06-13  Bastian Maerkisch  <bmaerkisch@web.de>
+
+	* config/config.mgw config/config.nt src/win/wtext.h:  Move preprocessor
+	defines for fake pipe support to wtext.h in order to avoid redefinition
+	warnings.
+
+	* config/mingw/Makefile config/msvc/Makefile:  Include
+	templates for initialization files in distribution.
+
+	* src/win/wgraph.c (drawgraph): Do not try to detect color capabilities
+	of printers. When drawing to a printer, scale line widths to match the
+	widths on screen and fix placement of super- and subscripts.
+	Bug #3503318
+
+2012-06-12  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* src/datafile.c (df_readascii):  Bugfix for label plots using column 0
+	to generate text. E.g. plot foo using 1:2:(sprintf("%d",$0)) with labels
+
+2012-06-09  Bastian Maerkisch  <bmaerkisch@web.de>
+
+	* src/fit.c (setvar):  Accept a double value instead of struct value.
+	Use fill_gpval_float. Simplify callers.
+
+	* src/fit.c (getivar, getdvar, creatdvar):  Use get_udv_by_name() or
+	add_udv_by_name().
+
+	* src/fit.c (fit_command):  Always initialize variables which might be
+	set by user variables. This is necessary since user variables may be
+	`undefine`d.
+
+	* src/eval.c (real_int):  New function to retrieve an integer value
+	from a user variable.
+
+2012-06-07  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* src/tabulate.c:  Allow tabulation (set table) of pixel values for
+	IMAGE RGBIMAGE RGBA_IMAGE.
+
+2012-06-01  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* src/plot2d.c (box_range_fiddling):
+	Autoscaling + auto-boxwidth + log scale on x = fail.
+	Bug #3529285
+
+2012-05-30  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* term/pslatex.trm: More helpful error message if output filename
+	is not acceptable.
+	Bug #3529832
+
+	* src/interpol.c (cp_implode): This routine was not preserving the z
+	value (used as a weight by smooth acsplines) of input data points.
+	Bug #3529621
+
+	* src/plot2d.c (get_data) docs/gnuplot.doc:  Use unit weights for
+	"smooth acsplines" if no separate column of weights is provided.
+
+2012-05-25  Hans-Bernhard Broeker  <broeker@physik.rwth-aachen.de>
+
+	* docs/Makefile.am (gnuplot.ms, figures, gnuplot.tex)
+	(gnuplot.hlp, gnuplot.gih, allgih, gnuplot.texi, gnuplot.ipf)
+	(gnuplot.rtf, check): Re-enable out-of-source-tree builds.
+	(doc2ms_SOURCES): Remove duplicate source file.
+	(doc2ms): Remove rule that would conflict with automake generated
+	one.
+
+2012-05-24  Bastian Maerkisch  <bmaerkisch@web.de>
+
+	* src/win/wgraph.c: Recreate fonts after resizing the graph window.
+	Fixes side effects of changes on 2012-05-20.
+
+2012-05-23  Bastian Maerkisch  <bmaerkisch@web.de>
+
+	* src/win/wgraph.c src/win/wgnuplib.h term/win.trm: Support for
+	hypertext labels for win terminal.
+
+	* src/win/wgdiplus.c|h src/wgraph.c term/win.trm: rgba colors.
+	Restricted to GDI+ and thus currently only available when using
+	antialiasing.
+
+2012-05-21  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* src/term_api.h: Core support for hypertext in interactive
+	terminals.  Terminal entry term->hypertext(int TYPE, const char
+	TEXT) associates a hypertext string with some subsequent graphics
+	object.  The effect of this association depends on TYPE.
+	Initially only type HYPERTEXT_TOOLTIP is implemented.  This causes
+	the text string to be displayed in a tooltip-like popup when the
+	mouse hovers over the associated graphics element.
+
+	* src/gadgets.c src/gadgets.h src/set.c src/show.c: New keyword
+	"hypertext" associated with individual labels, including plot
+	style "with labels".  The label text is displayed only when the
+	mouse hovers over the associated anchor point.
+
+	* term/README docs/gnuplot.doc demo/hypertext.dem: Documentation
+	and demo
+
+	* term/canvas.trm term/js/gnuplot_mouse.js: Support for canvas
+	terminal.
+
+	* src/qtterminal/QtGnuplotEvent.h
+	src/qtterminal/QtGnuplotScene.cpp src/qtterminal/QtGnuplotScene.h
+	src/qtterminal/qt_term.cpp src/qtterminal/qt_term.h term/qt.trm:
+	Support for qt terminal.
+
+	* term/svg.trm term/js/gnuplot_svg.js: Support for svg terminal.
+
+	* src/wxterminal/gp_cairo.c src/wxterminal/gp_cairo.h
+	src/wxterminal/wxt_gui.cpp src/wxterminal/wxt_gui.h
+	src/wxterminal/wxt_term.h term/cairo.trm term/wxt.trm: Support for
+	wxt terminal.
+
+2012-05-20  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* configure.in docs/Makefile.am: Updated a patch from Christoph
+	Junghans to use autoconf to manage the documentation subdirectory.
+	The primary reason is to allow --without-lisp-files to control
+	whether or not the build process tries to access emacs-specific
+	directories and files that may not be present.  Bugs #2950671
+	#3528377
+
+2012-05-20  Alexander Täschner  <taschna@users.sourceforge.net>
+
+	* src/fit.c|h (regress)
+	* src/save.c (save_set_all)
+	* src/set.c (set_fit)
+	* src/show.c (show_fit)
+	* src/unset.c (unset_fit)
+	* docs/gnuplot.doc: New option "set fit [no]errorscaling" which
+	allows to toggle scaling of parameter errors. The default remains
+	to scale errors.  Patch #3375473, Feature Request #2956524.
+
+2012-05-20  Bastian Maerkisch  <bmaerkisch@web.de>
+
+	* src/win/wcommon.h src/win/wgnuplib.h src/win/wgraph.c: Remove
+	limit on number of plots which can be toggled on/off via key
+	entries.  Maximum number of toolbar buttons still restricted to
+	MAXPLOTSHIDE.  Bug #3516417
+
+	* demo/image2.dem: Meaning of "set [xyz]range reverse" changed.
+
+	* term/win.trm (WIN_options, WIN_set_color) src/win/wgraph.c
+	(drawgraph): Change the behaviour of the "mono" terminal option of
+	the windows terminal. Colors are converted from RGB to grayscale in
+	drawgraph(). That way, a grayscale copy of colour plots can be
+	obtained more easily.
+
+	* src/win/wgnuplib.h src/win/wgraph.c: Retain the temporary bitmap used
+	for drawing to speed up redraws. Reduces the number of calls to
+	drawgraph() to a minimum.
+
+2012-05-17  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* src/term.c (do_arc) src/graphics.c (do_ellipse):  Revisit clipping the
+	filled interior of circles and ellipses.  Now it handles objects whose
+	center is outside the plot but specified in plot coordinates.
+	Bug #3522515
+
+2012-05-17  Shigeharu Takeno  <shige@iee.niit.ac.jp>
+
+	* docs/faq-ja.tex docs/gnuplot-ja.doc docs/term-ja.diff
+	man/gnuplot-ja.1:  Sync with English documentation.
+
+2012-05-13  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* src/term.c (do_arc) src/graphics.c (do_ellipse):  Clip the filled
+	interior of circles and ellipses.
+	Bug #3522515
+
+2012-05-11  Ethan A Merritt  <merritt@u.washington.edu>
+
+	* src/wxterminal/wxt_gui.cpp (wxt_cairo_refresh):  Execution of the
+	command list must be protected by command_list_mutex or it will blow up
+	if the command list is cleared/replaced during execution.
+	Bug #3371205
+
+	* src/graphics.c:  Allow log-scaled y axis for plots with fillsteps.
+	Bug #3324785
+
 2012-05-10  Ethan A Merritt  <merritt@u.washington.edu>
 
 	* src/misc.c (lf_push lf_pop) src/misc.h:  The lf_push/lf_pop mechanism

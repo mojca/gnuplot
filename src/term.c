@@ -1,5 +1,5 @@
 #ifndef lint
-static char *RCSid() { return RCSid("$Id: term.c,v 1.236 2012/05/06 00:31:36 sfeam Exp $"); }
+static char *RCSid() { return RCSid("$Id: term.c,v 1.239 2012/05/17 05:03:17 sfeam Exp $"); }
 #endif
 
 /* GNUPLOT - term.c */
@@ -1361,7 +1361,6 @@ do_arc(
 
     /* Calculate the vertices */
     aspect = (double)term->v_tic / (double)term->h_tic;
-    vertex[0].style = style;
     for (i=0; i<segments; i++) {
 	vertex[i].x = cx + cos(DEG2RAD * (arc_start + i*INC)) * radius;
 	vertex[i].y = cy + sin(DEG2RAD * (arc_start + i*INC)) * radius * aspect;
@@ -1369,6 +1368,7 @@ do_arc(
 #   undef INC
     vertex[segments].x = cx + cos(DEG2RAD * arc_end) * radius;
     vertex[segments].y = cy + sin(DEG2RAD * arc_end) * radius * aspect;
+
     if (fabs(arc_end - arc_start) > .1 
     &&  fabs(arc_end - arc_start) < 359.9) {
 	vertex[++segments].x = cx;
@@ -1379,12 +1379,29 @@ do_arc(
     } else
 	complete_circle = TRUE;
 
-    if (style) {
-	/* Fill in the center */
+    if (style) { /* Fill in the center */
+	/* EAM DEBUG - Do proper clipping */
+	gpiPoint fillarea[250];
+	int xcent, ycent, in;
+	for (i=0, in=0; i<segments; i++) {
+	    xcent = cx; ycent = cy;
+	    fillarea[in] = vertex[i];
+	    if (clip_line(&xcent, &ycent, &fillarea[in].x, &fillarea[in].y))
+		in++;
+	}
+	if (clip_point(cx,cy))
+	    for (i=segments-1; i>=0; i--) {
+		fillarea[in+1] = vertex[i];
+		fillarea[in].x = cx; fillarea[in].y = cy;
+		if (0 > clip_line(&fillarea[in+1].x, &fillarea[in+1].y, 
+				  &fillarea[in].x, &fillarea[in].y))
+		    in++;
+	    }
+	fillarea[0].style = style;
 	if (term->filled_polygon)
-	    term->filled_polygon(segments+1, vertex);
-    } else {
-	/* Draw the arc */
+	    term->filled_polygon(in, fillarea);
+
+    } else { /* Draw the arc */
 	if (!wedge && !complete_circle)
 	    segments -= 2;
 	for (i=0; i<segments; i++)
